@@ -1,0 +1,36 @@
++==================================================+
+|         CHATAPP JAVA LOAD TEST                   |
++==================================================+
+|  Target:     http://backend:8080
+|  Users:      10
+|  Duration:   15 seconds
++==================================================+
+
+[Phase 1] Registering 10 users...
+[Phase 1] Done. 10 users registered in 1.0s
+
+[Phase 2] Running load test for 15 seconds with 10 concurrent users...
+
++==============================================================+
+|              LOAD TEST RESULTS SUMMARY                       |
++==============================================================+
+|  Total Requests:    1,392
+|  Total Errors:      0 (0.00%)
+|  Data Transferred:  661.6 KB
+|
+|  Overall Latency:
+|    Avg:   59.9 ms
+|    P50:   21 ms
+|    P90:   156 ms
+|    P95:   178 ms
+|    P99:   331 ms
+|    Max:   488 ms
++==============================================================+
+|  Per-Endpoint Breakdown                                      |
++==============================================================+
+|  get_conversation      count=348     avg=21      p50=15     p95=55     p99=89    ms
+|  get_conversations     count=348     avg=23      p50=16     p95=64     p99=106   ms
+|  login                 count=348     avg=167     p50=149    p95=312    p99=384   ms
+|  send_message          count=348     avg=28      p50=19     p95=80     p99=133   ms
+|  register              count=10      avg=80      p50=74     p95=137    p99=137   ms
++==============================================================+

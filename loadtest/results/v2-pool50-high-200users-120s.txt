@@ -1,0 +1,50 @@
++==================================================+
+|         CHATAPP JAVA LOAD TEST                   |
++==================================================+
+|  Target:     http://backend:8080
+|  Users:      200
+|  Duration:   120 seconds
++==================================================+
+
+[Phase 1] Registering 200 users...
+  ...registered 50/200
+  ...registered 100/200
+  ...registered 150/200
+[Phase 1] Done. 200 users registered in 18.1s
+
+[Phase 2] Running load test for 120 seconds with 200 concurrent users...
+  [17s] 500 iterations, 2235 requests, 0 errors
+  [28s] 1000 iterations, 4210 requests, 0 errors
+  [39s] 1500 iterations, 6235 requests, 0 errors
+  [50s] 2000 iterations, 8222 requests, 0 errors
+  [60s] 2500 iterations, 10234 requests, 0 errors
+  [70s] 3000 iterations, 12225 requests, 0 errors
+  [80s] 3500 iterations, 14250 requests, 0 errors
+  [90s] 4000 iterations, 16245 requests, 0 errors
+  [100s] 4500 iterations, 18226 requests, 0 errors
+  [108s] 5000 iterations, 20213 requests, 0 errors
+  [117s] 5500 iterations, 22208 requests, 0 errors
+
++==============================================================+
+|              LOAD TEST RESULTS SUMMARY                       |
++==============================================================+
+|  Total Requests:    23,444
+|  Total Errors:      0 (0.00%)
+|  Data Transferred:  12,182.4 KB
+|
+|  Overall Latency:
+|    Avg:   963.0 ms
+|    P50:   845 ms
+|    P90:   2,056 ms
+|    P95:   2,456 ms
+|    P99:   3,412 ms
+|    Max:   6,168 ms
++==============================================================+
+|  Per-Endpoint Breakdown                                      |
++==============================================================+
+|  get_conversation      count=5861    avg=762     p50=644    p95=2068   p99=2908  ms
+|  get_conversations     count=5861    avg=730     p50=626    p95=2010   p99=2799  ms
+|  login                 count=5861    avg=1555    p50=1437   p95=2999   p99=3977  ms
+|  send_message          count=5861    avg=835     p50=707    p95=2231   p99=3241  ms
+|  register              count=200     avg=89      p50=86     p95=126    p99=143   ms
++==============================================================+

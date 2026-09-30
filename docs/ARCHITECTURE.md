@@ -13,9 +13,11 @@
 9. [API Endpoints](#api-endpoints)
 10. [Docker Infrastructure](#docker-infrastructure)
 11. [Load Testing](#load-testing)
-12. [Load Test Results](#load-test-results)
-13. [Bottleneck Analysis](#bottleneck-analysis)
-14. [Scaling Roadmap](#scaling-roadmap)
+12. [V1 Baseline Results (pool=10)](#v1-baseline-results-pool10)
+13. [V2 Results (pool=50)](#v2-results-pool50)
+14. [V1 vs V2 Comparison](#v1-vs-v2-comparison)
+15. [Bottleneck Analysis](#bottleneck-analysis)
+16. [Scaling Roadmap](#scaling-roadmap)
 
 ---
 
@@ -390,9 +392,9 @@ docker run --rm --network chat-app_default -v ./loadtest:/loadtest -w /loadtest 
 
 ---
 
-## Load Test Results
+## V1 Baseline Results (pool=10)
 
-All tests run on the same machine, clean database, Docker Desktop.
+All tests run on the same machine, clean database, Docker Desktop. `hikari.maximum-pool-size=10`.
 
 ### Test 1: Smoke (10 users, 15 seconds)
 
@@ -483,6 +485,134 @@ All tests run on the same machine, clean database, Docker Desktop.
 
 ---
 
+## V2 Results (pool=50)
+
+Single change: `hikari.maximum-pool-size` raised from **10 → 50**. Everything else identical.
+
+### Test 1: Smoke (10 users, 15 seconds)
+
+| Metric           | Value        |
+|------------------|--------------|
+| Total Requests   | 1,392        |
+| Errors           | 0 (0.00%)    |
+| Data Transferred | 661.6 KB     |
+| Throughput       | ~93 req/s    |
+
+**Overall Latency:**
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 21 ms    |
+| P90        | 156 ms   |
+| P95        | 178 ms   |
+| P99        | 331 ms   |
+| Max        | 488 ms   |
+
+**Per-Endpoint:**
+
+| Endpoint          | Count | Avg    | P50  | P95  | P99  |
+|-------------------|-------|--------|------|------|------|
+| register          | 10    | 80 ms  | 74   | 137  | 137  |
+| login             | 348   | 167 ms | 149  | 312  | 384  |
+| send_message      | 348   | 28 ms  | 19   | 80   | 133  |
+| get_conversation  | 348   | 21 ms  | 15   | 55   | 89   |
+| get_conversations | 348   | 23 ms  | 16   | 64   | 106  |
+
+### Test 2: Medium (50 users, 60 seconds)
+
+| Metric           | Value        |
+|------------------|--------------|
+| Total Requests   | 9,212        |
+| Errors           | 0 (0.00%)    |
+| Data Transferred | 5,068.5 KB   |
+| Throughput       | ~154 req/s   |
+
+**Overall Latency:**
+
+| Percentile | Latency   |
+|------------|-----------|
+| P50        | 79 ms     |
+| P90        | 955 ms    |
+| P95        | 1,262 ms  |
+| P99        | 1,679 ms  |
+| Max        | 2,728 ms  |
+
+**Per-Endpoint:**
+
+| Endpoint          | Count | Avg     | P50  | P95   | P99   |
+|-------------------|-------|---------|------|-------|-------|
+| register          | 50    | 96 ms   | 91   | 120   | 252   |
+| login             | 2,303 | 876 ms  | 818  | 1,636 | 1,955 |
+| send_message      | 2,303 | 86 ms   | 64   | 232   | 359   |
+| get_conversation  | 2,303 | 69 ms   | 50   | 198   | 324   |
+| get_conversations | 2,303 | 72 ms   | 53   | 200   | 300   |
+
+### Test 3: High (200 users, 120 seconds)
+
+| Metric           | Value         |
+|------------------|---------------|
+| Total Requests   | 23,444        |
+| Errors           | 0 (0.00%)     |
+| Data Transferred | 12,182.4 KB   |
+| Throughput       | ~196 req/s    |
+
+**Overall Latency:**
+
+| Percentile | Latency   |
+|------------|-----------|
+| P50        | 845 ms    |
+| P90        | 2,056 ms  |
+| P95        | 2,456 ms  |
+| P99        | 3,412 ms  |
+| Max        | 6,168 ms  |
+
+**Per-Endpoint:**
+
+| Endpoint          | Count | Avg     | P50   | P95   | P99   |
+|-------------------|-------|---------|-------|-------|-------|
+| register          | 200   | 89 ms   | 86    | 126   | 143   |
+| login             | 5,861 | 1,555ms | 1,437 | 2,999 | 3,977 |
+| send_message      | 5,861 | 835 ms  | 707   | 2,231 | 3,241 |
+| get_conversation  | 5,861 | 762 ms  | 644   | 2,068 | 2,908 |
+| get_conversations | 5,861 | 730 ms  | 626   | 2,010 | 2,799 |
+
+---
+
+## V1 vs V2 Comparison
+
+Only change between V1 and V2: `hikari.maximum-pool-size` 10 → 50.
+
+### At 50 users (medium load)
+
+| Endpoint          | V1 P95    | V2 P95    | Change            |
+|-------------------|-----------|-----------|-------------------|
+| login             | 847 ms    | 1,636 ms  | **1.9x SLOWER**   |
+| send_message      | 684 ms    | 232 ms    | **2.9x faster**   |
+| get_conversation  | 302 ms    | 198 ms    | **1.5x faster**   |
+| get_conversations | 177 ms    | 200 ms    | similar           |
+
+### At 200 users (high load)
+
+| Endpoint          | V1 P95    | V2 P95    | Change            |
+|-------------------|-----------|-----------|-------------------|
+| login             | 1,619 ms  | 2,999 ms  | **1.9x SLOWER**   |
+| send_message      | 2,291 ms  | 2,231 ms  | similar           |
+| get_conversation  | 2,210 ms  | 2,068 ms  | slightly faster   |
+| get_conversations | 2,094 ms  | 2,010 ms  | slightly faster   |
+
+### Key Finding: The Pool Increase Exposed BCrypt
+
+With pool=10, the pool queue was acting as an **accidental rate-limiter** — only 10 threads could BCrypt at once. Raising to pool=50 let all 50 (or 200) BCrypt operations run simultaneously, **saturating the CPU**. This is why:
+
+- DB-bound endpoints (`send_message`, `get_conversation`) **improved** — no more pool wait
+- CPU-bound endpoint (`login`) **got worse** — more concurrent BCrypt = more CPU contention
+
+This is the classic bottleneck cascade: **fix one and the next one becomes the new ceiling.**
+
+The next bottleneck to fix is BCrypt concurrency — see Step 2 in the Scaling Roadmap.
+
+---
+
 ## Bottleneck Analysis
 
 ### Scaling Comparison Table
@@ -514,21 +644,15 @@ All tests run on the same machine, clean database, Docker Desktop.
 - Lower BCrypt cost factor (trade security for speed — not recommended)
 - Separate auth service to isolate CPU-heavy operations
 
-### Bottleneck #2: Database Connection Pool Exhaustion (CRITICAL)
+### Bottleneck #2: Database Connection Pool Exhaustion (FIXED in V2)
 
-**The problem**: HikariCP max pool size is **10 connections** serving **200 concurrent users**.
+**The problem (V1)**: HikariCP max pool size was **10 connections** serving **200 concurrent users**.
 
-At 200 users, every request needs a DB connection. With only 10 available:
-- 190 threads wait in the HikariCP queue
-- Wait time compounds — each thread holds a connection for the entire request
-- This explains why ALL endpoints degrade at 200 users, not just login
+**The fix (V2)**: `hikari.maximum-pool-size=50`
 
-**Evidence**: At 50 users, `get_conversations` avg = 65ms. At 200 users, avg = 885ms. The query itself hasn't changed — the threads are just waiting for connections.
+**Result**: DB-bound endpoints (`send_message`, `get_conversation`) improved 1.5-2.9x at 50 users. However fixing this exposed the next bottleneck — BCrypt CPU saturation. Login got 1.9x *slower* because the pool had previously been throttling BCrypt concurrency.
 
-**Fix options for V2**:
-- Increase `hikari.maximum-pool-size` to 50-100
-- Add connection pool monitoring (HikariCP metrics endpoint)
-- Use reactive/non-blocking DB drivers (R2DBC)
+**Lesson**: The pool was masking the CPU problem. This is how bottleneck cascades work.
 
 ### Bottleneck #3: No Pagination — Growing Query Payload (MODERATE)
 
@@ -590,21 +714,20 @@ That's **~0.83 requests/second per user just for polling**, even when nothing ha
 
 ## Scaling Roadmap
 
-Based on the bottleneck analysis, here's the priority order for V2 improvements:
+| Step | Change                              | Status      | Result / Expected Impact                                |
+|------|-------------------------------------|-------------|--------------------------------------------------------|
+| 1    | HikariCP pool 10 → 50              | **DONE V2** | DB endpoints 1.5-2.9x faster; exposed BCrypt ceiling  |
+| 2    | BCrypt: cache login tokens          | Next        | Remove BCrypt from hot path entirely                   |
+| 3    | Message pagination (LIMIT 50)       | Planned     | Smaller payloads, less DB I/O per request              |
+| 4    | Composite DB index on messages      | Planned     | Faster conversation queries                            |
+| 5    | Cache JWT user lookups (Spring Cache)| Planned    | Eliminate per-request DB lookup                        |
+| 6    | WebSockets / SSE for messaging      | Planned     | Remove polling overhead (~0.83 req/s per idle user)    |
+| 7    | Horizontal scaling (2+ instances)   | Future      | Linear throughput increase                             |
+| 8    | Read replicas for PostgreSQL        | Future      | Separate read/write workloads                          |
 
-| Priority | Change                              | Expected Impact on P95         |
-|----------|-------------------------------------|-------------------------------|
-| 1        | Increase HikariCP pool to 50        | 3-5x improvement at high load |
-| 2        | Add message pagination (LIMIT 50)   | 2-3x improvement, less I/O   |
-| 3        | Cache JWT user lookups (Redis)      | Eliminate redundant DB reads  |
-| 4        | WebSockets for messaging            | Eliminate polling overhead     |
-| 5        | Token caching (avoid re-login)      | Remove BCrypt from hot path   |
-| 6        | Composite DB index                  | Faster conversation queries   |
-| 7        | Horizontal scaling (2+ instances)   | Linear throughput increase    |
-| 8        | Read replicas                       | Separate read/write workloads |
-
-**Target for V2**: P95 < 200ms at 200 concurrent users (currently 2,086ms — need 10x improvement).
+**Current ceiling (V2)**: BCrypt CPU saturation. Login P95 = 2,999ms at 200 users.
+**Next target**: Eliminate re-login from the load test cycle to isolate BCrypt to its minimal footprint, then cache validated tokens.
 
 ---
 
-*Document generated from load tests run on April 5, 2026. Results are specific to the test machine (Docker Desktop, shared resources). Production numbers will vary.*
+*Last updated: April 5, 2026. Tests run on Docker Desktop; production numbers will differ.*

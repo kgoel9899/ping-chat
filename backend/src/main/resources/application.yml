@@ -4,7 +4,7 @@ spring:
     username: ${DB_USER:chatapp}
     password: ${DB_PASSWORD:chatapp}
     hikari:
-      maximum-pool-size: 10
+      maximum-pool-size: 50
   jpa:
     hibernate:
       ddl-auto: update

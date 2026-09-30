@@ -6,6 +6,7 @@ import com.chatapp.repository.UserRepository;
 import com.chatapp.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -18,6 +19,7 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
 
+    @CacheEvict(value = "users", key = "#request.username")
     public AuthResponse register(RegisterRequest request) {
         log.info("Register attempt: username={}, email={}", request.username(), request.email());
 

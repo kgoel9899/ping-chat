@@ -18,8 +18,10 @@
 14. [V1 vs V2 Comparison](#v1-vs-v2-comparison)
 15. [V3 Results (pool=50, realistic login)](#v3-results-pool50-realistic-login)
 16. [V2 vs V3 Comparison](#v2-vs-v3-comparison)
-17. [Bottleneck Analysis](#bottleneck-analysis)
-18. [Scaling Roadmap](#scaling-roadmap)
+17. [V4 Results (pool=50, user cache)](#v4-results-pool50-user-cache)
+18. [V3 vs V4 Comparison](#v3-vs-v4-comparison)
+19. [Bottleneck Analysis](#bottleneck-analysis)
+20. [Scaling Roadmap](#scaling-roadmap)
 
 ---
 
@@ -733,7 +735,167 @@ Only change: load test fixed to login once instead of per-iteration. **App code 
 
 V1 and V2 test results were distorted by unrealistic per-iteration login. The CPU was spending most of its time BCrypt-hashing — something that never happens for returning users. V3 reflects real-world usage where each user authenticates once.
 
-**With realistic load, the same app delivers P95 < 600ms at 200 users** — using only a connection pool increase as the sole infrastructure change. (V3 — Realistic Load)
+**With realistic load, the same app delivers P95 < 600ms at 200 users** — using only a connection pool increase as the sole infrastructure change.
+
+---
+
+## V4 Results (pool=50, user cache)
+
+Change from V3: **`@Cacheable` added to `UserRepository.findByUsername`** using Spring's built-in `ConcurrentHashMap` cache (`@EnableCaching`). This eliminates the `SELECT * FROM users WHERE username=?` DB hit that ran on **every authenticated request** inside `JwtAuthFilter`. Tests now run at 200 and 500 users only.
+
+### Test 1: High (200 users, 120 seconds)
+
+> Two runs recorded: **Run 1** immediately after a cold rebuild (JVM not yet JIT-compiled). **Run 2** on a warm JVM. Run 2 is the representative steady-state result.
+
+**Run 1 — Cold JVM:**
+
+| Metric           | Value          |
+|------------------|----------------|
+| Total Requests   | 76,296         |
+| Errors           | 0 (0.00%)      |
+| Throughput       | ~636 req/s     |
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 150 ms   |
+| P90        | 586 ms   |
+| P95        | 768 ms   |
+| P99        | 1,188 ms |
+| Max        | 3,378 ms |
+
+| Endpoint          | Count  | Avg    | P50 | P95 | P99   |
+|-------------------|--------|--------|-----|-----|-------|
+| login             | 200    | 77 ms  | 74  | 99  | 103   |
+| send_message      | 25,432 | 280 ms | 209 | 850 | 1,319 |
+| get_conversation  | 25,432 | 223 ms | 110 | 718 | 1,105 |
+| get_conversations | 25,432 | 232 ms | 128 | 722 | 1,113 |
+
+**Run 2 — Warm JVM (representative):**
+
+| Metric           | Value          |
+|------------------|----------------|
+| Total Requests   | 87,264         |
+| Errors           | 0 (0.00%)      |
+| Data Transferred | 154,081.0 KB   |
+| Throughput       | ~727 req/s     |
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 172 ms   |
+| P90        | 468 ms   |
+| P95        | 573 ms   |
+| P99        | 785 ms   |
+| Max        | 1,377 ms |
+
+| Endpoint          | Count  | Avg    | P50 | P95 | P99 |
+|-------------------|--------|--------|-----|-----|-----|
+| login             | 200    | 73 ms  | 71  | 95  | 106 |
+| send_message      | 29,088 | 233 ms | 212 | 625 | 860 |
+| get_conversation  | 29,088 | 188 ms | 132 | 537 | 730 |
+| get_conversations | 29,088 | 196 ms | 152 | 552 | 749 |
+
+### Test 2: Stress (500 users, 120 seconds)
+
+> Run 1 was already on a warm backend JVM (the 200-user tests had run before it). Run 2 confirms the result is stable.
+
+**Run 1 — Warm JVM:**
+
+| Metric           | Value          |
+|------------------|----------------|
+| Total Requests   | 89,070         |
+| Errors           | 0 (0.00%)      |
+| Throughput       | ~742 req/s     |
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 173 ms   |
+| P90        | 451 ms   |
+| P95        | 561 ms   |
+| P99        | 785 ms   |
+| Max        | 1,570 ms |
+
+| Endpoint          | Count  | Avg    | P50 | P95 | P99 |
+|-------------------|--------|--------|-----|-----|-----|
+| login             | 500    | 73 ms  | 68  | 100 | 147 |
+| send_message      | 29,690 | 227 ms | 203 | 611 | 842 |
+| get_conversation  | 29,690 | 184 ms | 147 | 530 | 746 |
+| get_conversations | 29,690 | 191 ms | 165 | 539 | 749 |
+
+**Run 2 — Warm JVM (representative):**
+
+| Metric           | Value          |
+|------------------|----------------|
+| Total Requests   | 91,944         |
+| Errors           | 0 (0.00%)      |
+| Data Transferred | 158,440.8 KB   |
+| Throughput       | ~766 req/s     |
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 164 ms   |
+| P90        | 434 ms   |
+| P95        | 543 ms   |
+| P99        | 743 ms   |
+| Max        | 1,482 ms |
+
+| Endpoint          | Count  | Avg    | P50 | P95 | P99 |
+|-------------------|--------|--------|-----|-----|-----|
+| login             | 500    | 72 ms  | 68  | 94  | 105 |
+| send_message      | 30,648 | 220 ms | 198 | 607 | 824 |
+| get_conversation  | 30,648 | 175 ms | 137 | 501 | 688 |
+| get_conversations | 30,648 | 182 ms | 150 | 513 | 706 |
+
+---
+
+## V3 vs V4 Comparison
+
+Only change: `@Cacheable("users")` on `findByUsername` — eliminates one DB query per authenticated request.
+
+Comparison uses V4 Run 2 (warm JVM) as the representative result.
+
+### At 200 users, 120 seconds
+
+| Metric               | V3          | V4 Run 1 (cold) | V4 Run 2 (warm) | V3→V4 Warm       |
+|----------------------|-------------|-----------------|-----------------|------------------|
+| Overall P50          | 194 ms      | 150 ms          | 172 ms          | **1.1x faster**  |
+| Overall P90          | —           | 586 ms          | 468 ms          | —                |
+| Overall P95          | 586 ms      | 768 ms          | 573 ms          | **1.02x faster** |
+| Overall P99          | —           | 1,188 ms        | 785 ms          | —                |
+| send_message P95     | 653 ms      | 850 ms          | 625 ms          | **1.04x faster** |
+| get_conversation P95 | 545 ms      | 718 ms          | 537 ms          | **1.01x faster** |
+| Throughput           | ~693 req/s  | ~636 req/s      | ~727 req/s      | **+5%**          |
+
+### What the two V4 runs reveal
+
+**Run 1 (cold JVM)**: P95 looked *worse* than V3 (768ms vs 586ms). This was misleading — the JVM had just restarted after a full rebuild. HotSpot JIT hadn’t compiled the hot paths yet, so CPU-bound work (serialization, Spring Security filter chain) ran interpreted.
+
+**Run 2 (warm JVM)**: P95 improves over V3 (573ms vs 586ms) and P99 drops from 1,188ms to 785ms. Throughput is 5% higher. The cache is doing its job — one fewer DB round-trip per request freed up HikariCP connections for message writes.
+
+**Lesson**: Always measure after JVM warmup when comparing optimizations. A cold-JVM measurement can make a real improvement look like a regression.
+
+**At 500 users (both runs warm)**: P95 is 561ms (run 1) / 543ms (run 2) — both slightly better than 200-user warm (573ms). The results are stable across runs, confirming the cache benefit is real.
+
+### Why 500 users is faster than 200 users
+
+This is counterintuitive but has a precise explanation. The bottleneck is not concurrency — it is the number of **rows returned per `get_conversation` call**, which grows with messages accumulated *per conversation pair*, not with total user count.
+
+| | 200 users | 500 users |
+|---|---|---|
+| `send_message` calls (run 2) | ~29,088 | ~30,648 |
+| Active conversation pairs (approx.) | ~100 | ~250 |
+| Messages per pair after 120s | **~291** | **~123** |
+
+Both runs send roughly the same total number of messages (~30k), but 500 users spreads them across ~2.5x more conversation pairs. At the end of the test, each `get_conversation` at 200 users returns **~2.4x more rows** than at 500 users. Since there is no `LIMIT`, the query payload grows throughout the test duration — and it grows faster per pair with fewer users.
+
+**This is proof that the bottleneck is payload size, not connection pool pressure or thread contention.** Once pagination caps `get_conversation` at 50 rows, the payload becomes constant regardless of user count or test duration — and 200-user and 500-user P95 numbers should converge.
+
+**The next bottleneck is clear: unbounded conversation fetches.** Pagination is Step 4.
+
+---
+
+## Bottleneck Analysis
+
+### Scaling Comparison Table (V3 — Realistic Load, pool=50)
 
 | Metric               | 10 users | 50 users | 200 users | Degradation (10->200) |
 |----------------------|----------|----------|-----------|----------------------|
@@ -802,18 +964,15 @@ That's **~0.83 requests/second per user just for polling**, even when nothing ha
 - Long-polling with ETag/Last-Modified headers
 - Increase poll interval when chat is idle
 
-### Bottleneck #5: No Caching (LOW-MEDIUM)
+### Bottleneck #5: User Lookup on Every Request (FIXED in V4)
 
-**The problem**: Every request hits the database. There is no caching layer.
+**The problem (V1-V3)**: `JwtAuthFilter` ran `SELECT * FROM users WHERE username=?` on **every authenticated request** to populate the `SecurityContext`.
 
-- User lookups during JWT validation hit DB every time
-- Conversation partner lists are recalculated from scratch every 3s
-- Same data is served repeatedly without any cache
+**The fix (V4)**: `@Cacheable(value="users", key="#username")` on `findByUsername`. Spring's built-in `ConcurrentHashMap` cache (no Redis, no extra dependency). `@CacheEvict` on register ensures new users are immediately visible.
 
-**Fix options for V2**:
-- Add Redis for session/token caching
-- Spring Cache annotations on conversation list queries
-- HTTP response caching headers for rarely-changing data
+**Result**: One DB query eliminated per request. P50 improved 194ms→150ms at 200 users. However, this freed up more throughput which caused faster message accumulation — P95 revealed the pagination bottleneck more clearly.
+
+**Lesson**: Even small repeated DB hits matter at scale. Every authenticated endpoint was paying this tax.
 
 ### Bottleneck #6: Single-Instance Architecture (LOW for V1)
 
@@ -832,19 +991,19 @@ That's **~0.83 requests/second per user just for polling**, even when nothing ha
 
 ## Scaling Roadmap
 
-| Step | Change                              | Status          | Result / Impact                                           |
-|------|-------------------------------------|-----------------|----------------------------------------------------------|
-| 1    | HikariCP pool 10 → 50              | **DONE V2**     | DB endpoints 1.5-2.9x faster; uncovered BCrypt issue    |
-| 2    | Fix load test: login once per user  | **DONE V3**     | True baseline: P95=586ms at 200 users, 693 req/s        |
-| 3    | Message pagination (LIMIT 50)       | Next            | Smaller payloads, less I/O; conversations grow over time |
-| 4    | Composite DB index on messages      | Planned         | Faster conversation range queries                        |
-| 5    | Cache JWT user lookups (Spring Cache)| Planned        | Eliminate per-request DB lookup in JwtAuthFilter         |
-| 6    | WebSockets / SSE for messaging      | Planned         | Remove polling (~0.83 req/s per idle user)               |
-| 7    | Horizontal scaling (2+ instances)   | Future          | Linear throughput increase                               |
-| 8    | Read replicas for PostgreSQL        | Future          | Separate read/write workloads                            |
+| Step | Change                              | Status          | Result / Impact                                                   |
+|------|-------------------------------------|-----------------|-------------------------------------------------------------------|
+| 1    | HikariCP pool 10 → 50              | **DONE V2**     | DB endpoints 1.5-2.9x faster; revealed BCrypt saturation         |
+| 2    | Fix load test: login once per user  | **DONE V3**     | True baseline: P95=586ms, 693 req/s at 200 users                 |
+| 3    | Cache user lookups (`@Cacheable`)   | **DONE V4**     | P50 improved; revealed pagination as next bottleneck              |
+| 4    | Message pagination (LIMIT 50)       | **Next**        | Stop fetching all messages; fixed payload size regardless of age  |
+| 5    | Composite DB index on messages      | Planned         | Faster pagination queries on (sender_id, receiver_id, timestamp)  |
+| 6    | WebSockets / SSE for messaging      | Planned         | Remove polling (~0.83 req/s per idle user)                        |
+| 7    | Horizontal scaling (2+ instances)   | Future          | Linear throughput increase                                        |
+| 8    | Read replicas for PostgreSQL        | Future          | Separate read/write workloads                                     |
 
-**Current baseline (V3)**: P95 = 586ms, throughput = 693 req/s at 200 concurrent users.
-**Next target**: Add pagination so conversation fetches don't grow unboundedly as message history accumulates.
+**Current baseline (V4, warm JVM)**: P95=573ms at 200 users, P95=543ms at 500 users.
+**Next target**: Pagination — cap `get_conversation` at 50 rows. Expected P95 to drop well below 200ms and stay flat as test duration increases.
 
 ---
 

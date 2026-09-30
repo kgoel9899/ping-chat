@@ -16,8 +16,10 @@
 12. [V1 Baseline Results (pool=10)](#v1-baseline-results-pool10)
 13. [V2 Results (pool=50)](#v2-results-pool50)
 14. [V1 vs V2 Comparison](#v1-vs-v2-comparison)
-15. [Bottleneck Analysis](#bottleneck-analysis)
-16. [Scaling Roadmap](#scaling-roadmap)
+15. [V3 Results (pool=50, realistic login)](#v3-results-pool50-realistic-login)
+16. [V2 vs V3 Comparison](#v2-vs-v3-comparison)
+17. [Bottleneck Analysis](#bottleneck-analysis)
+18. [Scaling Roadmap](#scaling-roadmap)
 
 ---
 
@@ -613,9 +615,125 @@ The next bottleneck to fix is BCrypt concurrency — see Step 2 in the Scaling R
 
 ---
 
-## Bottleneck Analysis
+## V3 Results (pool=50, realistic login)
 
-### Scaling Comparison Table
+Change from V2: **Load test fixed** — login called **once per user at startup** (matching 24h JWT reality), not on every loop iteration. App code and config unchanged.
+
+### Test 1: Smoke (10 users, 15 seconds)
+
+| Metric           | Value        |
+|------------------|-------------|
+| Total Requests   | 1,758       |
+| Errors           | 0 (0.00%)   |
+| Data Transferred | 1,334.7 KB  |
+| Throughput       | ~117 req/s  |
+
+**Overall Latency:**
+
+| Percentile | Latency |
+|------------|---------|
+| P50        | 15 ms   |
+| P90        | 39 ms   |
+| P95        | 51 ms   |
+| P99        | 84 ms   |
+| Max        | 518 ms  |
+
+**Per-Endpoint:**
+
+| Endpoint          | Count | Avg   | P50 | P95 | P99 |
+|-------------------|-------|-------|-----|-----|-----|
+| login             | 10    | 82 ms | 76  | 110 | 110 |
+| send_message      | 586   | 23 ms | 17  | 55  | 128 |
+| get_conversation  | 586   | 17 ms | 14  | 44  | 58  |
+| get_conversations | 586   | 18 ms | 14  | 44  | 74  |
+
+### Test 2: Medium (50 users, 60 seconds)
+
+| Metric           | Value        |
+|------------------|--------------|
+| Total Requests   | 26,283       |
+| Errors           | 0 (0.00%)    |
+| Data Transferred | 28,730.1 KB  |
+| Throughput       | ~438 req/s   |
+
+**Overall Latency:**
+
+| Percentile | Latency |
+|------------|---------|
+| P50        | 31 ms   |
+| P90        | 102 ms  |
+| P95        | 140 ms  |
+| P99        | 243 ms  |
+| Max        | 761 ms  |
+
+**Per-Endpoint:**
+
+| Endpoint          | Count  | Avg   | P50 | P95 | P99 |
+|-------------------|--------|-------|-----|-----|-----|
+| login             | 50     | 81 ms | 78  | 108 | 122 |
+| send_message      | 8,761  | 57 ms | 38  | 162 | 271 |
+| get_conversation  | 8,761  | 41 ms | 26  | 124 | 223 |
+| get_conversations | 8,761  | 42 ms | 28  | 128 | 216 |
+
+### Test 3: High (200 users, 120 seconds)
+
+| Metric           | Value          |
+|------------------|----------------|
+| Total Requests   | 83,172         |
+| Errors           | 0 (0.00%)      |
+| Data Transferred | 142,340.6 KB   |
+| Throughput       | ~693 req/s     |
+
+**Overall Latency:**
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 194 ms   |
+| P90        | 478 ms   |
+| P95        | 586 ms   |
+| P99        | 813 ms   |
+| Max        | 1,744 ms |
+
+**Per-Endpoint:**
+
+| Endpoint          | Count  | Avg    | P50 | P95 | P99 |
+|-------------------|--------|--------|-----|-----|-----|
+| login             | 200    | 75 ms  | 70  | 98  | 106 |
+| send_message      | 27,724 | 254 ms | 226 | 653 | 883 |
+| get_conversation  | 27,724 | 198 ms | 172 | 545 | 748 |
+| get_conversations | 27,724 | 204 ms | 181 | 549 | 757 |
+
+---
+
+## V2 vs V3 Comparison
+
+Only change: load test fixed to login once instead of per-iteration. **App code identical.**
+
+### At 50 users (medium load)
+
+| Endpoint          | V2 P95    | V3 P95  | Improvement       |
+|-------------------|-----------|---------|-------------------|
+| send_message      | 232 ms    | 162 ms  | **1.4x faster**   |
+| get_conversation  | 198 ms    | 124 ms  | **1.6x faster**   |
+| get_conversations | 200 ms    | 128 ms  | **1.6x faster**   |
+| Overall P95       | 1,262 ms  | 140 ms  | **9x faster**     |
+| Throughput        | ~154 req/s| ~438 req/s | **2.8x more**  |
+
+### At 200 users (high load)
+
+| Endpoint          | V2 P95    | V3 P95  | Improvement        |
+|-------------------|-----------|---------|--------------------|
+| send_message      | 2,231 ms  | 653 ms  | **3.4x faster**    |
+| get_conversation  | 2,068 ms  | 545 ms  | **3.8x faster**    |
+| get_conversations | 2,010 ms  | 549 ms  | **3.7x faster**    |
+| Overall P95       | 2,456 ms  | 586 ms  | **4.2x faster**    |
+| Throughput        | ~196 req/s| ~693 req/s | **3.5x more**   |
+
+### Key Insight: The V2 Numbers Were Lying
+
+V1 and V2 test results were distorted by unrealistic per-iteration login. The CPU was spending most of its time BCrypt-hashing — something that never happens for returning users. V3 reflects real-world usage where each user authenticates once.
+
+**With realistic load, the same app delivers P95 < 600ms at 200 users** — using only a connection pool increase as the sole infrastructure change. (V3 — Realistic Load)
 
 | Metric               | 10 users | 50 users | 200 users | Degradation (10->200) |
 |----------------------|----------|----------|-----------|----------------------|
@@ -714,19 +832,19 @@ That's **~0.83 requests/second per user just for polling**, even when nothing ha
 
 ## Scaling Roadmap
 
-| Step | Change                              | Status      | Result / Expected Impact                                |
-|------|-------------------------------------|-------------|--------------------------------------------------------|
-| 1    | HikariCP pool 10 → 50              | **DONE V2** | DB endpoints 1.5-2.9x faster; exposed BCrypt ceiling  |
-| 2    | BCrypt: cache login tokens          | Next        | Remove BCrypt from hot path entirely                   |
-| 3    | Message pagination (LIMIT 50)       | Planned     | Smaller payloads, less DB I/O per request              |
-| 4    | Composite DB index on messages      | Planned     | Faster conversation queries                            |
-| 5    | Cache JWT user lookups (Spring Cache)| Planned    | Eliminate per-request DB lookup                        |
-| 6    | WebSockets / SSE for messaging      | Planned     | Remove polling overhead (~0.83 req/s per idle user)    |
-| 7    | Horizontal scaling (2+ instances)   | Future      | Linear throughput increase                             |
-| 8    | Read replicas for PostgreSQL        | Future      | Separate read/write workloads                          |
+| Step | Change                              | Status          | Result / Impact                                           |
+|------|-------------------------------------|-----------------|----------------------------------------------------------|
+| 1    | HikariCP pool 10 → 50              | **DONE V2**     | DB endpoints 1.5-2.9x faster; uncovered BCrypt issue    |
+| 2    | Fix load test: login once per user  | **DONE V3**     | True baseline: P95=586ms at 200 users, 693 req/s        |
+| 3    | Message pagination (LIMIT 50)       | Next            | Smaller payloads, less I/O; conversations grow over time |
+| 4    | Composite DB index on messages      | Planned         | Faster conversation range queries                        |
+| 5    | Cache JWT user lookups (Spring Cache)| Planned        | Eliminate per-request DB lookup in JwtAuthFilter         |
+| 6    | WebSockets / SSE for messaging      | Planned         | Remove polling (~0.83 req/s per idle user)               |
+| 7    | Horizontal scaling (2+ instances)   | Future          | Linear throughput increase                               |
+| 8    | Read replicas for PostgreSQL        | Future          | Separate read/write workloads                            |
 
-**Current ceiling (V2)**: BCrypt CPU saturation. Login P95 = 2,999ms at 200 users.
-**Next target**: Eliminate re-login from the load test cycle to isolate BCrypt to its minimal footprint, then cache validated tokens.
+**Current baseline (V3)**: P95 = 586ms, throughput = 693 req/s at 200 concurrent users.
+**Next target**: Add pagination so conversation fetches don't grow unboundedly as message history accumulates.
 
 ---
 

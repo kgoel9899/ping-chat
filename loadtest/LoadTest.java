@@ -112,6 +112,40 @@ public class LoadTest {
             System.exit(1);
         }
 
+        // ── Phase 1b: Login each user once (real users log in once, not per-request) ──
+        System.out.println("[Phase 1b] Logging in " + users.size() + " users once...");
+        long loginStart = System.currentTimeMillis();
+        for (int i = 0; i < users.size(); i++) {
+            UserInfo u = users.get(i);
+            String loginBody = String.format(
+                "{\"username\":\"%s\",\"password\":\"password123\"}", u.username);
+            long start = System.currentTimeMillis();
+            try {
+                HttpResponse<String> res = setupClient.send(
+                    HttpRequest.newBuilder()
+                        .uri(URI.create(BASE_URL + "/api/auth/login"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(loginBody))
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString());
+                long dur = System.currentTimeMillis() - start;
+                record("login", dur);
+                if (res.statusCode() == 200) {
+                    String freshToken = extractString(res.body(), "token");
+                    users.set(i, new UserInfo(u.id, u.username, freshToken));
+                } else {
+                    System.err.printf("  Login failed for %s: %d%n", u.username, res.statusCode());
+                }
+            } catch (Exception e) {
+                System.err.printf("  Login exception for %s: %s%n", u.username, e.getMessage());
+            }
+            if (i % 50 == 0 && i > 0) {
+                System.out.printf("  ...logged in %d/%d%n", i, users.size());
+            }
+        }
+        System.out.printf("[Phase 1b] Done. Logged in %d users in %.1fs%n%n",
+                users.size(), (System.currentTimeMillis() - loginStart) / 1000.0);
+
         // ── Phase 2: Load test ──
         System.out.printf("[Phase 2] Running load test for %d seconds with %d concurrent users...%n",
                 DURATION_SECONDS, users.size());
@@ -140,16 +174,15 @@ public class LoadTest {
                             partner = users.get(rng.nextInt(users.size()));
                         } while (partner.id == me.id);
 
-                        // 1. Login
-                        doLogin(client, me);
+                        // Token reused from the one-time login above (24h lifetime)
 
-                        // 2. Send message
+                        // 1. Send message
                         doSendMessage(client, me, partner);
 
-                        // 3. Get conversation
+                        // 2. Get conversation
                         doGetConversation(client, me, partner);
 
-                        // 4. Get conversations list
+                        // 3. Get conversations list
                         doGetConversations(client, me);
 
                         int iters = iterCount.incrementAndGet();

@@ -9,7 +9,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.Collections;
 import java.util.List;
+import org.springframework.data.domain.PageRequest;
 
 @Slf4j
 @Service
@@ -40,7 +42,8 @@ public class MessageService {
     }
 
     public List<MessageResponse> getConversation(Long userId1, Long userId2) {
-        List<Message> msgs = messageRepository.findConversation(userId1, userId2);
+        List<Message> msgs = messageRepository.findConversation(userId1, userId2, PageRequest.of(0, 15));
+        Collections.reverse(msgs);
         log.info("Get conversation: user1={}, user2={}, messages={}", userId1, userId2, msgs.size());
         return msgs.stream().map(this::toResponse).toList();
     }

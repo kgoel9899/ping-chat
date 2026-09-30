@@ -1,0 +1,107 @@
++==================================================+
+|         CHATAPP JAVA LOAD TEST                   |
++==================================================+
+|  Target:     http://backend:8080
+|  Users:      200
+|  Duration:   120 seconds
++==================================================+
+
+[Phase 1] Registering 200 users...
+  ...registered 50/200
+  ...registered 100/200
+  ...registered 150/200
+[Phase 1] Done. 200 users registered in 17.6s
+
+[Phase 1b] Logging in 200 users once...
+  ...logged in 50/200
+  ...logged in 100/200
+  ...logged in 150/200
+[Phase 1b] Done. Logged in 200 users in 15.0s
+
+[Phase 2] Running load test for 120 seconds with 200 concurrent users...
+  [3s] 500 iterations, 1636 requests, 0 errors
+  [6s] 1000 iterations, 3125 requests, 0 errors
+  [9s] 1500 iterations, 4651 requests, 0 errors
+  [11s] 2000 iterations, 6147 requests, 0 errors
+  [13s] 2500 iterations, 7635 requests, 0 errors
+  [16s] 3000 iterations, 9126 requests, 0 errors
+  [18s] 3500 iterations, 10659 requests, 0 errors
+  [20s] 4000 iterations, 12137 requests, 0 errors
+  [22s] 4500 iterations, 13620 requests, 0 errors
+  [24s] 5000 iterations, 15120 requests, 0 errors
+  [26s] 5500 iterations, 16633 requests, 0 errors
+  [28s] 6000 iterations, 18138 requests, 0 errors
+  [30s] 6500 iterations, 19636 requests, 0 errors
+  [31s] 7000 iterations, 21132 requests, 0 errors
+  [33s] 7500 iterations, 22632 requests, 0 errors
+  [36s] 8000 iterations, 24140 requests, 0 errors
+  [37s] 8500 iterations, 25612 requests, 0 errors
+  [39s] 9000 iterations, 27125 requests, 0 errors
+  [41s] 9500 iterations, 28639 requests, 0 errors
+  [43s] 10000 iterations, 30116 requests, 0 errors
+  [44s] 10500 iterations, 31633 requests, 0 errors
+  [46s] 11000 iterations, 33111 requests, 0 errors
+  [48s] 11500 iterations, 34647 requests, 0 errors
+  [49s] 12000 iterations, 36131 requests, 0 errors
+  [51s] 12500 iterations, 37610 requests, 0 errors
+  [53s] 13000 iterations, 39142 requests, 0 errors
+  [55s] 13500 iterations, 40630 requests, 0 errors
+  [58s] 14000 iterations, 42131 requests, 0 errors
+  [60s] 14500 iterations, 43631 requests, 0 errors
+  [61s] 15000 iterations, 45162 requests, 0 errors
+  [63s] 15500 iterations, 46617 requests, 0 errors
+  [65s] 16000 iterations, 48098 requests, 0 errors
+  [67s] 16500 iterations, 49642 requests, 0 errors
+  [69s] 17000 iterations, 51139 requests, 0 errors
+  [70s] 17500 iterations, 52644 requests, 0 errors
+  [72s] 18000 iterations, 54123 requests, 0 errors
+  [74s] 18500 iterations, 55663 requests, 0 errors
+  [75s] 19000 iterations, 57144 requests, 0 errors
+  [77s] 19500 iterations, 58642 requests, 0 errors
+  [79s] 20000 iterations, 60107 requests, 0 errors
+  [81s] 20500 iterations, 61637 requests, 0 errors
+  [82s] 21000 iterations, 63122 requests, 0 errors
+  [84s] 21500 iterations, 64603 requests, 0 errors
+  [86s] 22000 iterations, 66129 requests, 0 errors
+  [88s] 22500 iterations, 67645 requests, 0 errors
+  [90s] 23000 iterations, 69142 requests, 0 errors
+  [91s] 23500 iterations, 70610 requests, 0 errors
+  [93s] 24000 iterations, 72121 requests, 0 errors
+  [95s] 24500 iterations, 73608 requests, 0 errors
+  [97s] 25000 iterations, 75129 requests, 0 errors
+  [99s] 25500 iterations, 76648 requests, 0 errors
+  [100s] 26000 iterations, 78131 requests, 0 errors
+  [102s] 26500 iterations, 79657 requests, 0 errors
+  [104s] 27000 iterations, 81128 requests, 0 errors
+  [106s] 27500 iterations, 82605 requests, 0 errors
+  [108s] 28000 iterations, 84141 requests, 0 errors
+  [110s] 28500 iterations, 85635 requests, 0 errors
+  [112s] 29000 iterations, 87116 requests, 0 errors
+  [114s] 29500 iterations, 88658 requests, 0 errors
+  [116s] 30000 iterations, 90138 requests, 0 errors
+  [118s] 30500 iterations, 91650 requests, 0 errors
+  [120s] 31000 iterations, 93167 requests, 0 errors
+
++==============================================================+
+|              LOAD TEST RESULTS SUMMARY                       |
++==============================================================+
+|  Total Requests:    93,576
+|  Total Errors:      0 (0.00%)
+|  Data Transferred:  42,596.4 KB
+|
+|  Overall Latency:
+|    Avg:   186.2 ms
+|    P50:   159 ms
+|    P90:   423 ms
+|    P95:   537 ms
+|    P99:   750 ms
+|    Max:   1,789 ms
++==============================================================+
+|  Per-Endpoint Breakdown                                      |
++==============================================================+
+|  get_conversation      count=31192   avg=170     p50=135    p95=499    p99=707   ms
+|  get_conversations     count=31192   avg=173     p50=142    p95=503    p99=695   ms
+|  login                 count=200     avg=75      p50=72     p95=96     p99=111   ms
+|  send_message          count=31192   avg=218     p50=190    p95=591    p99=830   ms
+|  register              count=200     avg=87      p50=81     p95=120    p99=148   ms
++==============================================================+

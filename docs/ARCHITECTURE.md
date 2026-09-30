@@ -20,8 +20,10 @@
 16. [V2 vs V3 Comparison](#v2-vs-v3-comparison)
 17. [V4 Results (pool=50, user cache)](#v4-results-pool50-user-cache)
 18. [V3 vs V4 Comparison](#v3-vs-v4-comparison)
-19. [Bottleneck Analysis](#bottleneck-analysis)
-20. [Scaling Roadmap](#scaling-roadmap)
+19. [V5 Results (pagination LIMIT 15)](#v5-results-pagination-limit-15)
+20. [V4 vs V5 Comparison](#v4-vs-v5-comparison)
+21. [Bottleneck Analysis](#bottleneck-analysis)
+22. [Scaling Roadmap](#scaling-roadmap)
 
 ---
 
@@ -893,6 +895,93 @@ Both runs send roughly the same total number of messages (~30k), but 500 users s
 
 ---
 
+## V5 Results (pagination LIMIT 15)
+
+Changes from V4:
+- **`get_conversation`**: `PageRequest.of(0, 15)` — orders by `timestamp DESC`, takes 15 most recent messages, service reverses for chronological order
+- **`get_conversations`**: subquery with `LIMIT 15` — returns 15 most recently active conversation partners ordered by `MAX(timestamp) DESC`
+
+Both fetch payloads are now bounded to 15 rows regardless of history length. JVM was warm before both tests (100s warmup run not saved).
+
+### Test 1: High (200 users, 120 seconds)
+
+| Metric           | Value          |
+|------------------|----------------|
+| Total Requests   | 93,576         |
+| Errors           | 0 (0.00%)      |
+| Data Transferred | 42,596.4 KB    |
+| Throughput       | ~780 req/s     |
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 159 ms   |
+| P90        | 423 ms   |
+| P95        | 537 ms   |
+| P99        | 750 ms   |
+| Max        | 1,789 ms |
+
+| Endpoint          | Count  | Avg    | P50 | P95 | P99 |
+|-------------------|--------|--------|-----|-----|-----|
+| login             | 200    | 75 ms  | 72  | 96  | 111 |
+| send_message      | 31,192 | 218 ms | 190 | 591 | 830 |
+| get_conversation  | 31,192 | 170 ms | 135 | 499 | 707 |
+| get_conversations | 31,192 | 173 ms | 142 | 503 | 695 |
+
+### Test 2: Stress (500 users, 120 seconds)
+
+| Metric           | Value          |
+|------------------|----------------|
+| Total Requests   | 94,176         |
+| Errors           | 0 (0.00%)      |
+| Data Transferred | 38,685.3 KB    |
+| Throughput       | ~785 req/s     |
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 154 ms   |
+| P90        | 419 ms   |
+| P95        | 531 ms   |
+| P99        | 753 ms   |
+| Max        | 1,498 ms |
+
+| Endpoint          | Count  | Avg    | P50 | P95 | P99 |
+|-------------------|--------|--------|-----|-----|-----|
+| login             | 500    | 77 ms  | 70  | 115 | 145 |
+| send_message      | 31,392 | 217 ms | 188 | 597 | 827 |
+| get_conversation  | 31,392 | 169 ms | 134 | 494 | 704 |
+| get_conversations | 31,392 | 170 ms | 138 | 489 | 699 |
+
+---
+
+## V4 vs V5 Comparison
+
+Changes: LIMIT 15 on both `get_conversation` (messages) and `get_conversations` (partner list).
+
+| Metric               | V4 200u (warm) | V5 200u | V4 500u (warm) | V5 500u |
+|----------------------|----------------|---------|----------------|----------|
+| Overall P50          | 172 ms         | **159 ms** | 164 ms       | **154 ms** |
+| Overall P90          | 468 ms         | **423 ms** | 434 ms       | **419 ms** |
+| Overall P95          | 573 ms         | **537 ms** | 543 ms       | **531 ms** |
+| Overall P99          | 785 ms         | **750 ms** | 743 ms       | **753 ms** |
+| get_conversation P95 | 537 ms         | **499 ms** | 501 ms       | **494 ms** |
+| get_conversations P95| 552 ms         | **503 ms** | 513 ms       | **489 ms** |
+| send_message P95     | 625 ms         | **591 ms** | 607 ms       | **597 ms** |
+| Throughput           | ~727 req/s     | **~780 req/s** | ~766 req/s | **~785 req/s** |
+
+### Key observations
+
+**Both user counts improved.** Unlike the previous partial V5 attempt (messages only), adding the conversation-list cap fixed the 500-user regression. At 500 users, each `get_conversations` was scanning up to 179 partner rows per poll; now it caps at 15. This is a bigger relative saving at 500 users since the partner scan grows with conversation breadth, not message depth.
+
+**P95 converges between user counts.** 200 users: 537ms, 500 users: 531ms — virtually identical. The payload is now constant regardless of user count or test duration. This is exactly what pagination should achieve.
+
+**Data transferred dropped dramatically.** V4 200 users: ~154 MB. V5 200 users: ~42 MB — a **3.6x reduction** in network payload. V5 500 users: ~38 MB (even less, because partner lists cap earlier for users with more conversations).
+
+**`send_message` P95 also improved** (~625ms → ~591ms at 200 users) even though the write query is unchanged. Fewer bytes on the wire means threads complete faster and free up pool connections sooner, benefiting writes too.
+
+**The bottleneck has shifted to `send_message`** — write contention is now the dominant latency driver at both user counts. Step 5 (composite index) will help reads; the write path needs different attention (batching, async writes, or a message queue).
+
+---
+
 ## Bottleneck Analysis
 
 ### Scaling Comparison Table (V3 — Realistic Load, pool=50)
@@ -991,19 +1080,19 @@ That's **~0.83 requests/second per user just for polling**, even when nothing ha
 
 ## Scaling Roadmap
 
-| Step | Change                              | Status          | Result / Impact                                                   |
-|------|-------------------------------------|-----------------|-------------------------------------------------------------------|
-| 1    | HikariCP pool 10 → 50              | **DONE V2**     | DB endpoints 1.5-2.9x faster; revealed BCrypt saturation         |
-| 2    | Fix load test: login once per user  | **DONE V3**     | True baseline: P95=586ms, 693 req/s at 200 users                 |
-| 3    | Cache user lookups (`@Cacheable`)   | **DONE V4**     | P50 improved; revealed pagination as next bottleneck              |
-| 4    | Message pagination (LIMIT 50)       | **Next**        | Stop fetching all messages; fixed payload size regardless of age  |
-| 5    | Composite DB index on messages      | Planned         | Faster pagination queries on (sender_id, receiver_id, timestamp)  |
-| 6    | WebSockets / SSE for messaging      | Planned         | Remove polling (~0.83 req/s per idle user)                        |
-| 7    | Horizontal scaling (2+ instances)   | Future          | Linear throughput increase                                        |
-| 8    | Read replicas for PostgreSQL        | Future          | Separate read/write workloads                                     |
+| Step | Change                                        | Status      | Result / Impact                                                               |
+|------|-----------------------------------------------|-------------|-------------------------------------------------------------------------------|
+| 1    | HikariCP pool 10 → 50                        | **DONE V2** | DB endpoints 1.5-2.9x faster; revealed BCrypt saturation                     |
+| 2    | Fix load test: login once per user            | **DONE V3** | True baseline: P95=586ms, 693 req/s at 200 users                             |
+| 3    | Cache user lookups (`@Cacheable`)             | **DONE V4** | P50 improved; revealed pagination as next bottleneck                          |
+| 4    | Pagination LIMIT 15 (messages + partner list) | **DONE V5** | P95 537ms @ 200u / 531ms @ 500u; 3.6x less data; P95 converges across scales |
+| 5    | Composite DB index on messages                | **Next**    | Faster range queries on (sender_id, receiver_id, timestamp DESC)              |
+| 6    | WebSockets / SSE for messaging                | Planned     | Remove polling (~0.83 req/s per idle user)                                    |
+| 7    | Horizontal scaling (2+ instances)             | Future      | Linear throughput increase                                                    |
+| 8    | Read replicas for PostgreSQL                  | Future      | Separate read/write workloads                                                 |
 
-**Current baseline (V4, warm JVM)**: P95=573ms at 200 users, P95=543ms at 500 users.
-**Next target**: Pagination — cap `get_conversation` at 50 rows. Expected P95 to drop well below 200ms and stay flat as test duration increases.
+**Current baseline (V5)**: P95=537ms @ 200 users, P95=531ms @ 500 users — converged. Throughput ~780 req/s.
+**Next target**: Composite index on `messages(sender_id, timestamp DESC)` and `messages(receiver_id, timestamp DESC)` to eliminate full-table scans in both paginated queries.
 
 ---
 

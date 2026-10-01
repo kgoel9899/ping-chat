@@ -18,6 +18,8 @@ All tests run with `loadtest/LoadTest.java` via Docker on Docker Desktop. See [A
 7. [V3 vs V4 Comparison](#v3-vs-v4-comparison)
 8. [V5 Results (pagination LIMIT 15)](#v5-results-pagination-limit-15)
 9. [V4 vs V5 Comparison](#v4-vs-v5-comparison)
+10. [V6 Results (composite indexes)](#v6-results-composite-indexes)
+11. [V5 vs V6 Comparison](#v5-vs-v6-comparison)
 
 ---
 
@@ -398,6 +400,91 @@ Changes: LIMIT 15 on both `get_conversation` (messages) and `get_conversations` 
 **`send_message` P95 also improved** without any write query changes — fewer bytes on the wire means threads complete faster and free pool connections sooner.
 
 **The bottleneck has shifted to `send_message`** — write contention is now dominant. Step 5 (composite index) will help reads; the write path needs separate attention.
+
+---
+
+## V6 Results (composite indexes)
+
+Changes from V5:
+- **`messages` table indexes**: replaced 3 single-column indexes (`sender_id`, `receiver_id`, `timestamp`) with 2 composite indexes — `idx_msg_sender_ts (sender_id, timestamp DESC)` and `idx_msg_receiver_ts (receiver_id, timestamp DESC)`
+- Both paginated queries now use pre-sorted index scans instead of a post-scan sort
+
+Files: `loadtest/results/v6-index-200users-120s.txt`, `v6-index-500users-120s.txt`
+
+### 200 users, 120 seconds
+
+| Metric           | Value          |
+|------------------|----------------|
+| Total Requests   | 96,969         |
+| Errors           | 0 (0.00%)      |
+| Data Transferred | 44,376.4 KB    |
+| Throughput       | ~808 req/s     |
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 151 ms   |
+| P90        | 404 ms   |
+| P95        | 504 ms   |
+| P99        | 726 ms   |
+| Max        | 1,617 ms |
+
+| Endpoint          | Count  | Avg    | P50 | P95 | P99 |
+|-------------------|--------|--------|-----|-----|-----|
+| login             | 200    | 75 ms  | 71  | 100 | 119 |
+| send_message      | 32,323 | 211 ms | 184 | 574 | 807 |
+| get_conversation  | 32,323 | 160 ms | 129 | 462 | 672 |
+| get_conversations | 32,323 | 162 ms | 133 | 466 | 668 |
+
+### 500 users, 120 seconds
+
+| Metric           | Value          |
+|------------------|----------------|
+| Total Requests   | 97,620         |
+| Errors           | 0 (0.00%)      |
+| Data Transferred | 40,192.3 KB    |
+| Throughput       | ~813 req/s     |
+
+| Percentile | Latency  |
+|------------|----------|
+| P50        | 148 ms   |
+| P90        | 399 ms   |
+| P95        | 499 ms   |
+| P99        | 698 ms   |
+| Max        | 1,358 ms |
+
+| Endpoint          | Count  | Avg    | P50 | P95 | P99 |
+|-------------------|--------|--------|-----|-----|-----|
+| login             | 500    | 73 ms  | 69  | 94  | 115 |
+| send_message      | 32,540 | 206 ms | 181 | 559 | 771 |
+| get_conversation  | 32,540 | 161 ms | 132 | 464 | 642 |
+| get_conversations | 32,540 | 162 ms | 131 | 468 | 643 |
+
+---
+
+## V5 vs V6 Comparison
+
+Changes: composite indexes `(sender_id, timestamp DESC)` and `(receiver_id, timestamp DESC)` replacing three single-column indexes.
+
+| Metric                | V5 200u   | V6 200u        | V5 500u   | V6 500u        |
+|-----------------------|-----------|----------------|-----------|----------------|
+| Overall P50           | 159 ms    | **151 ms**     | 154 ms    | **148 ms**     |
+| Overall P90           | 423 ms    | **404 ms**     | 419 ms    | **399 ms**     |
+| Overall P95           | 537 ms    | **504 ms**     | 531 ms    | **499 ms**     |
+| Overall P99           | 750 ms    | **726 ms**     | 753 ms    | **698 ms**     |
+| get_conversation P95  | 499 ms    | **462 ms**     | 494 ms    | **464 ms**     |
+| get_conversations P95 | 503 ms    | **466 ms**     | 489 ms    | **468 ms**     |
+| send_message P95      | 591 ms    | **574 ms**     | 597 ms    | **559 ms**     |
+| Throughput            | ~780 req/s| **~808 req/s** | ~785 req/s| **~813 req/s** |
+
+### Key observations
+
+**Read endpoints improved ~7%.** `get_conversation` and `get_conversations` P95 dropped ~37ms at 200 users. PostgreSQL now does two ordered index scans (one per OR branch) and merges 15 rows — no post-sort needed.
+
+**`send_message` also improved** (~591ms → ~574ms at 200u, ~597ms → ~559ms at 500u) despite no change to the write query. The index speeds up the `get_conversation` query that immediately follows each send in the test loop, freeing pool connections sooner.
+
+**P95 broke below 500ms at 500 users** (499ms) — first time crossing that threshold.
+
+**The write bottleneck remains.** `send_message` still leads P95 across all endpoints. Composite indexes help reads by definition; writes pay a small index-maintenance cost (negligible here). The next step is addressing write contention.
 
 ---
 

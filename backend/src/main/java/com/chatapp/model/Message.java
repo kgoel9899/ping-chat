@@ -6,9 +6,8 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "messages", indexes = {
-    @Index(name = "idx_msg_sender", columnList = "sender_id"),
-    @Index(name = "idx_msg_receiver", columnList = "receiver_id"),
-    @Index(name = "idx_msg_timestamp", columnList = "timestamp")
+    @Index(name = "idx_msg_sender_ts",   columnList = "sender_id, timestamp DESC"),
+    @Index(name = "idx_msg_receiver_ts", columnList = "receiver_id, timestamp DESC")
 })
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Message {

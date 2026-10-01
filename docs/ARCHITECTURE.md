@@ -295,16 +295,12 @@ backend/src/main/resources/static/
 
 ### Indexes
 
-| Index Name       | Column      | Purpose                        |
-|------------------|-------------|--------------------------------|
-| idx_msg_sender   | sender_id   | Fast lookup by sender          |
-| idx_msg_receiver | receiver_id | Fast lookup by receiver        |
-| idx_msg_timestamp| timestamp   | Ordering messages              |
+| Index Name           | Columns                    | Purpose                                          |
+|----------------------|----------------------------|--------------------------------------------------|
+| idx_msg_sender_ts    | sender_id, timestamp DESC  | Ordered scan for sender-side conversation queries |
+| idx_msg_receiver_ts  | receiver_id, timestamp DESC| Ordered scan for receiver-side queries           |
 
-**What's missing** (intentionally, for V1):
-- No composite index on `(sender_id, receiver_id, timestamp)` — would speed up conversation queries
-- No pagination — all messages are loaded every poll
-- No `updated_at` / `last_message_at` for efficient conversation sorting
+Both paginated queries (`findConversation`, `findConversationPartnerIds`) use an `OR sender_id = :x OR receiver_id = :x` pattern. PostgreSQL resolves each branch with one of these composite indexes, merges via BitmapOr, and LIMIT is applied without a post-sort step.
 
 ---
 
@@ -430,19 +426,18 @@ docker run ... | Tee-Object -FilePath "loadtest\results\v6-index-200users-120s.t
 
 **Lesson**: The pool was masking the CPU problem. This is how bottleneck cascades work.
 
-### Bottleneck #3: No Pagination — Growing Query Payload (MODERATE)
+### Bottleneck #3: No Pagination — Growing Query Payload (FIXED in V5+V6)
 
-**The problem**: `GET /api/messages/conversation/{id}` returns **ALL messages** between two users. No limit, no pagination.
+**The problem**: `GET /api/messages/conversation/{id}` returned **ALL messages** between two users. No limit, no pagination.
 
 - Early in the test: returns 1-5 messages → fast
 - Late in test (200 users, 120s): could return hundreds of messages per pair → slow, large payload
 
-**Evidence**: `get_conversation` avg goes from 19ms (10 users) to 937ms (200 users) — 49x degradation, the worst of any endpoint.
+**Evidence**: `get_conversation` avg went from 19ms (10 users) to 937ms (200 users) — 49x degradation, the worst of any endpoint.
 
-**Fix options for V2**:
-- Add `LIMIT 50 OFFSET ?` pagination
-- Add cursor-based pagination using `timestamp`
-- Only fetch messages since last-seen timestamp
+**Fix (V5)**: `PageRequest.of(0, 15)` on `findConversation`; SQL `LIMIT 15` subquery on `findConversationPartnerIds`. Payloads now bounded to 15 rows regardless of history length. P95 537ms → 531ms.
+
+**Fix (V6)**: Composite indexes `idx_msg_sender_ts (sender_id, timestamp DESC)` and `idx_msg_receiver_ts (receiver_id, timestamp DESC)`. Both paginated queries now walk a pre-ordered index instead of scanning+sorting. `get_conversation` P95 499ms → 462ms (−7.4%). Overall P95 504ms @ 200u / 499ms @ 500u.
 
 ### Bottleneck #4: HTTP Polling Overhead (MODERATE)
 
@@ -493,14 +488,14 @@ That's **~0.83 requests/second per user just for polling**, even when nothing ha
 | 2    | Fix load test: login once per user            | **DONE V3** | True baseline: P95=586ms, 693 req/s at 200 users                             |
 | 3    | Cache user lookups (`@Cacheable`)             | **DONE V4** | P50 improved; revealed pagination as next bottleneck                          |
 | 4    | Pagination LIMIT 15 (messages + partner list) | **DONE V5** | P95 537ms @ 200u / 531ms @ 500u; 3.6x less data; P95 converges across scales |
-| 5    | Composite DB index on messages                | **Next**    | Faster range queries on (sender_id, receiver_id, timestamp DESC)              |
+| 5    | Composite DB index on messages                | **DONE V6** | P95 504ms @ 200u / 499ms @ 500u; read queries use pre-ordered index scans     |
 | 6    | WebSockets / SSE for messaging                | Planned     | Remove polling (~0.83 req/s per idle user)                                    |
 | 7    | Horizontal scaling (2+ instances)             | Future      | Linear throughput increase                                                    |
 | 8    | Read replicas for PostgreSQL                  | Future      | Separate read/write workloads                                                 |
 
-**Current baseline (V5)**: P95=537ms @ 200 users, P95=531ms @ 500 users — converged. Throughput ~780 req/s.
-**Next target**: Composite index on `messages(sender_id, timestamp DESC)` and `messages(receiver_id, timestamp DESC)` to eliminate full-table scans in both paginated queries.
+**Current baseline (V6)**: P95=504ms @ 200 users, P95=499ms @ 500 users. Throughput ~808–813 req/s.
+**Next target**: WebSockets/SSE to eliminate polling overhead and address `send_message` write contention as the current dominant bottleneck.
 
 ---
 
-*Last updated: April 5, 2026. Tests run on Docker Desktop; production numbers will differ.*
+*Last updated: April 6, 2026. Tests run on Docker Desktop; production numbers will differ.*

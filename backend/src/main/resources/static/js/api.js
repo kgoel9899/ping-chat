@@ -54,10 +54,7 @@ const api = {
     return this.request('POST', '/api/auth/login', { username, password }, false);
   },
 
-  // Messages
-  sendMessage(receiverId, content) {
-    return this.request('POST', '/api/messages', { receiverId, content });
-  },
+  // Messages (HTTP — used for initial history load)
   getConversation(userId) {
     return this.request('GET', '/api/messages/conversation/' + userId);
   },
@@ -68,5 +65,56 @@ const api = {
   // Users
   searchUsers(q) {
     return this.request('GET', '/api/users/search?q=' + encodeURIComponent(q));
+  },
+};
+
+// ── WebSocket (STOMP) connection manager ──
+const ws = {
+  client: null,
+  onMessage: null, // callback set by chat.js
+
+  connect(token) {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const brokerURL = `${protocol}//${location.host}/ws`;
+
+    this.client = new StompJs.Client({
+      brokerURL,
+      connectHeaders: { Authorization: 'Bearer ' + token },
+      reconnectDelay: 3000,
+      onConnect: () => {
+        console.log('[WS] STOMP connected');
+        this.client.subscribe('/user/queue/messages', (frame) => {
+          const msg = JSON.parse(frame.body);
+          console.log('[WS] Message received:', msg.id);
+          if (this.onMessage) this.onMessage(msg);
+        });
+      },
+      onStompError: (frame) => {
+        console.error('[WS] STOMP error', frame.headers['message']);
+      },
+      onWebSocketClose: () => {
+        console.warn('[WS] WebSocket closed');
+      },
+    });
+    this.client.activate();
+  },
+
+  sendMessage(receiverId, content) {
+    if (!this.client || !this.client.connected) {
+      console.error('[WS] Not connected');
+      return;
+    }
+    this.client.publish({
+      destination: '/app/chat.send',
+      body: JSON.stringify({ receiverId, content }),
+    });
+  },
+
+  disconnect() {
+    if (this.client) {
+      this.client.deactivate();
+      this.client = null;
+      console.log('[WS] Disconnected');
+    }
   },
 };

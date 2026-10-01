@@ -28,6 +28,7 @@ function App() {
 
   const handleLogout = () => {
     console.log('[App] Logging out', user?.username);
+    ws.disconnect();
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setUser(null);

@@ -7,6 +7,7 @@ import com.chatapp.repository.MessageRepository;
 import com.chatapp.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
@@ -20,6 +21,7 @@ public class MessageService {
 
     private final MessageRepository messageRepository;
     private final UserRepository userRepository;
+    private final SimpMessagingTemplate messagingTemplate;
 
     public MessageResponse sendMessage(User sender, MessageRequest request) {
         log.info("Send message: sender={} -> receiver={}, length={}", sender.getId(), request.receiverId(), request.content().length());
@@ -38,7 +40,13 @@ public class MessageService {
         message = messageRepository.save(message);
 
         log.info("Message saved: id={}, sender={} -> receiver={}", message.getId(), sender.getId(), receiver.getId());
-        return toResponse(message);
+        MessageResponse response = toResponse(message);
+
+        // Push to both users via WebSocket (silent no-op if not connected)
+        messagingTemplate.convertAndSendToUser(sender.getUsername(), "/queue/messages", response);
+        messagingTemplate.convertAndSendToUser(receiver.getUsername(), "/queue/messages", response);
+
+        return response;
     }
 
     public List<MessageResponse> getConversation(Long userId1, Long userId2) {

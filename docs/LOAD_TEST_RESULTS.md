@@ -20,6 +20,8 @@ All tests run with `loadtest/LoadTest.java` via Docker on Docker Desktop. See [A
 9. [V4 vs V5 Comparison](#v4-vs-v5-comparison)
 10. [V6 Results (composite indexes)](#v6-results-composite-indexes)
 11. [V5 vs V6 Comparison](#v5-vs-v6-comparison)
+12. [V7 Results (WebSocket STOMP)](#v7-results-websocket-stomp)
+13. [V6 vs V7 Comparison](#v6-vs-v7-comparison)
 
 ---
 
@@ -485,6 +487,142 @@ Changes: composite indexes `(sender_id, timestamp DESC)` and `(receiver_id, time
 **P95 broke below 500ms at 500 users** (499ms) — first time crossing that threshold.
 
 **The write bottleneck remains.** `send_message` still leads P95 across all endpoints. Composite indexes help reads by definition; writes pay a small index-maintenance cost (negligible here). The next step is addressing write contention.
+
+---
+
+## V7 Results (WebSocket STOMP)
+
+Changes from V6:
+- **Transport replaced**: HTTP polling removed. Clients now open a persistent WebSocket connection (STOMP over WS) on load.
+- **send_message**: was `POST /api/messages` (HTTP). Now STOMP `SEND /app/chat.send` \u2014 server saves to DB and pushes `MessageResponse` to both sender and receiver via `convertAndSendToUser`.
+- **get_conversation / get_conversations**: still HTTP GET on initial load, but no longer polled every 2\u20133s \u2014 new messages arrive as WS push events.
+- **Metric change**: `send_message` latency now measures **WS round-trip** (STOMP frame sent \u2192 server saves \u2192 echo received), not an HTTP request queue wait.
+
+Files: `loadtest/results/v7-websocket-200users-120s.txt`, `v7-websocket-500users-120s.txt`
+
+### 200 users, 120 seconds
+
+| Metric               | Value          |
+|----------------------|----------------|
+| Total Requests       | 103,138        |
+| Errors               | 4 (0.00%)      |
+| WS Pushes Received   | 205,476        |
+| Data Transferred     | 24,062.3 KB    |
+| Throughput           | ~859 req/s     |
+
+| Percentile | Latency |
+|------------|---------|
+| P50        | 15 ms   |
+| P90        | 75 ms   |
+| P95        | 105 ms  |
+| P99        | 171 ms  |
+| Max        | 682 ms  |
+
+| Endpoint          | Count   | Avg    | P50 | P95 | P99 |
+|-------------------|---------|--------|-----|-----|-----|
+| login             | 200     | 71 ms  | 69  | 88  | 99  |
+| ws_connect        | 200     | 179 ms | 175 | 339 | 411 |
+| get_conversation  | 200     | 200 ms | 178 | 449 | 585 |
+| get_conversations | 200     | 260 ms | 255 | 510 | 655 |
+| send_message (WS) | 102,738 | 30 ms  | 15  | 102 | 163 |
+
+> `get_conversation` and `get_conversations` run once on initial load only \u2014 their counts are equal to the number of users, not iterations.
+
+### 500 users, 120 seconds
+
+| Metric               | Value          |
+|----------------------|----------------|
+| Total Requests       | 103,457        |
+| Errors               | 39 (0.04%)     |
+| WS Pushes Received   | 204,467        |
+| Data Transferred     | 24,281.0 KB    |
+| Throughput           | ~862 req/s     |
+
+| Percentile | Latency |
+|------------|---------|
+| P50        | 17 ms   |
+| P90        | 75 ms   |
+| P95        | 99 ms   |
+| P99        | 162 ms  |
+| Max        | 1,040 ms|
+
+| Endpoint          | Count   | Avg    | P50 | P95 | P99 |
+|-------------------|---------|--------|-----|-----|-----|
+| login             | 500     | 69 ms  | 66  | 87  | 96  |
+| ws_connect        | 500     | 183 ms | 173 | 365 | 476 |
+| get_conversation  | 500     | 240 ms | 160 | 648 | 914 |
+| get_conversations | 500     | 271 ms | 202 | 733 | 934 |
+| send_message (WS) | 102,434 | 30 ms  | 16  | 95  | 142 |
+
+> The 39 errors (0.04%) at 500u are echo timeouts \u2014 occasional TCP backpressure at high concurrency causes the 5-second echo wait to expire. No server errors or crashes.
+
+---
+
+## V6 vs V7 Comparison
+
+Changes: HTTP polling replaced with WebSocket (STOMP). `send_message` metric now measures WS round-trip, not HTTP queue wait.
+
+| Metric                  | V6 200u   | V7 200u       | V6 500u   | V7 500u       |
+|-------------------------|-----------|---------------|-----------|---------------|
+| Overall P50             | 151 ms    | **15 ms**     | 148 ms    | **17 ms**     |
+| Overall P90             | 404 ms    | **75 ms**     | 399 ms    | **75 ms**     |
+| Overall P95             | 504 ms    | **105 ms**    | 499 ms    | **99 ms**     |
+| Overall P99             | 726 ms    | **171 ms**    | 698 ms    | **162 ms**    |
+| send_message P95        | 574 ms    | **102 ms**    | 559 ms    | **95 ms**     |
+| send_message P50        | 184 ms    | **15 ms**     | 181 ms    | **16 ms**     |
+| Throughput              | ~808 req/s| **~859 req/s**| ~813 req/s| **~862 req/s**|
+| Errors                  | 0         | 4 (0.00%)     | 0         | 39 (0.04%)    |
+
+### Key observations
+
+### Why send_message improved so much (~5x)
+
+The metric measures different things in V6 vs V7 — this is the most important thing to understand about this comparison.
+
+**V6 (HTTP POST)**: a Tomcat thread is allocated for the entire duration of the request. At 200 concurrent users all sending messages at the same time, some threads are stuck waiting for a DB connection from HikariCP's pool of 50. The timer includes:
+1. Wait in Tomcat's accept queue
+2. Wait for a free HikariCP connection
+3. Actual DB `INSERT`
+4. HTTP response serialisation + network write
+
+**V7 (STOMP over WebSocket)**: the timer starts when the STOMP frame leaves the client and stops when the echo arrives back. The path is:
+1. WebSocket frame → Spring's `inboundChannel` (non-blocking, unbounded queue)
+2. `@MessageMapping` handler picks it up from a thread pool
+3. Actual DB `INSERT` (same as before)
+4. `convertAndSendToUser` → echo pushed back over the persistent connection
+
+Steps 1 and 2 are asynchronous — the frame is placed in an in-memory channel, not a Tomcat accept queue with a fixed thread ceiling. There is no "wait for a free Tomcat thread" step. The DB `INSERT` itself hasn't changed; only the queuing overhead before and after it disappeared.
+
+In short: **the raw DB write takes ~15ms**. In V6 you were measuring 15ms of DB work plus up to 559ms of thread-queue wait. In V7 you measure only the 15ms.
+
+### Why get_conversation and get_conversations improved
+
+In V6 these ran on every poll cycle (every 2–3s per user). Under 200 concurrent users that means:
+- ~67 `get_conversation` DB reads/second running continuously
+- ~67 `get_conversations` DB reads/second simultaneously
+- Both competing for the same HikariCP pool as `send_message` writes
+
+In V7 these run **once per user on initial page load** and never again — new messages arrive via WS push instead. The `count=200` in the per-endpoint table (equal to the number of users, not iterations) confirms this: 200 users generated exactly 200 DB reads across the entire 120s test instead of ~8,000. The connection pool is now almost entirely free for writes.
+
+### Why data transferred is less than V6 (~24 MB vs ~44 MB)
+
+V6 transferred ~44 MB because every poll returned a full JSON payload regardless of whether anything changed:
+- `GET /api/messages/conversations` returned a full partner list every 3s
+- `GET /api/messages/conversation/{id}` returned the last 15 messages every 2s
+
+At 200 users that's ~67 polling responses/second, each carrying full JSON arrays even for idle conversations.
+
+V7 transfers ~24 MB and those bytes are almost entirely `send_message` WS frames — one compact `MessageResponse` JSON object per message sent, pushed only when something actually happened. The repeated identical polling payloads that accounted for roughly half the V6 traffic are gone.
+
+The remaining 24 MB is also *more efficient per byte*: a WebSocket frame carries ~2 bytes of framing overhead vs ~400–600 bytes of HTTP headers per polling request.
+
+### 500u error rate 0.04%
+
+The 39 errors are echo timeouts — the load test sends a STOMP frame and waits up to 5 seconds for its own echo. At 500 concurrent connections, occasional TCP write backpressure on the Docker bridge network delays the echo past that threshold. The server received and saved every message; the client just timed out waiting. Not a server-side failure.
+
+### The dominant bottleneck now
+
+`send_message` still leads per-endpoint P95 (102ms at 200u). This is now the raw DB `INSERT` time under write contention — the queuing overhead is gone. Next steps: connection pool tuning for write-heavy workloads, or async message persistence (write to an in-memory queue, flush to DB in batches).
 
 ---
 

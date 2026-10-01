@@ -6,9 +6,13 @@ import com.chatapp.service.MessageService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.security.Principal;
 import java.util.List;
 
 @RestController
@@ -36,5 +40,12 @@ public class MessageController {
     public ResponseEntity<List<UserResponse>> getConversations(
             @AuthenticationPrincipal User currentUser) {
         return ResponseEntity.ok(messageService.getConversations(currentUser.getId()));
+    }
+
+    // ── WebSocket STOMP endpoint ──
+    @MessageMapping("chat.send")
+    public void handleWsMessage(@Payload MessageRequest request, Principal principal) {
+        User sender = (User) ((UsernamePasswordAuthenticationToken) principal).getPrincipal();
+        messageService.sendMessage(sender, request);
     }
 }

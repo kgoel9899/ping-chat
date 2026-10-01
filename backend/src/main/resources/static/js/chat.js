@@ -1,4 +1,4 @@
-// Chat page — conversations auto-refresh via polling
+// Chat page — real-time via WebSocket (STOMP), no polling
 function ChatPage({ user, onLogout }) {
   const [conversations, setConversations] = React.useState([]);
   const [selectedUser, setSelectedUser] = React.useState(null);
@@ -7,10 +7,14 @@ function ChatPage({ user, onLogout }) {
   const [searchQuery, setSearchQuery] = React.useState('');
   const [searchResults, setSearchResults] = React.useState([]);
   const messagesEndRef = React.useRef(null);
-  const pollConvRef = React.useRef(null);
-  const pollMsgRef = React.useRef(null);
+  const selectedUserRef = React.useRef(null);
 
-  // ─── Poll conversations list every 3s ───
+  // Keep ref in sync so WS callback sees latest selectedUser
+  React.useEffect(() => {
+    selectedUserRef.current = selectedUser;
+  }, [selectedUser]);
+
+  // ─── Load conversation list once on mount ───
   const loadConversations = React.useCallback(async () => {
     try {
       const data = await api.getConversations();
@@ -20,13 +24,39 @@ function ChatPage({ user, onLogout }) {
     }
   }, []);
 
+  // ─── Connect WebSocket + subscribe ───
   React.useEffect(() => {
-    loadConversations(); // initial load
-    pollConvRef.current = setInterval(loadConversations, 3000);
-    return () => clearInterval(pollConvRef.current);
-  }, [loadConversations]);
+    loadConversations();
 
-  // ─── Poll messages for selected conversation every 2s ───
+    ws.onMessage = (msg) => {
+      // Update messages if this message belongs to the active conversation
+      const sel = selectedUserRef.current;
+      if (sel) {
+        const isForConv =
+          (msg.senderId === user.id && msg.receiverId === sel.id) ||
+          (msg.senderId === sel.id && msg.receiverId === user.id);
+        if (isForConv) {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === msg.id)) return prev; // dedup
+            return [...prev, msg];
+          });
+        }
+      }
+
+      // Move conversation partner to top of list
+      const partnerId = msg.senderId === user.id ? msg.receiverId : msg.senderId;
+      const partnerName = msg.senderId === user.id ? msg.receiverUsername : msg.senderUsername;
+      setConversations((prev) => {
+        const filtered = prev.filter((c) => c.id !== partnerId);
+        return [{ id: partnerId, username: partnerName }, ...filtered];
+      });
+    };
+
+    ws.connect(api.getToken());
+    return () => ws.disconnect();
+  }, [user.id, loadConversations]);
+
+  // ─── Load messages when selecting a conversation ───
   const loadMessages = React.useCallback(async () => {
     if (!selectedUser) return;
     try {
@@ -38,11 +68,7 @@ function ChatPage({ user, onLogout }) {
   }, [selectedUser]);
 
   React.useEffect(() => {
-    if (selectedUser) {
-      loadMessages(); // immediate load on select
-      pollMsgRef.current = setInterval(loadMessages, 2000);
-    }
-    return () => clearInterval(pollMsgRef.current);
+    if (selectedUser) loadMessages();
   }, [selectedUser, loadMessages]);
 
   // ─── Auto-scroll to newest message ───
@@ -50,19 +76,12 @@ function ChatPage({ user, onLogout }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // ─── Send message ───
-  const sendMessage = async (e) => {
+  // ─── Send message via WebSocket ───
+  const sendMessage = (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !selectedUser) return;
-    try {
-      const msg = await api.sendMessage(selectedUser.id, newMessage);
-      setMessages((prev) => [...prev, msg]);
-      setNewMessage('');
-      // Also refresh conversation list so this partner appears at top
-      loadConversations();
-    } catch (err) {
-      console.error('[Chat] Failed to send', err);
-    }
+    ws.sendMessage(selectedUser.id, newMessage);
+    setNewMessage('');
   };
 
   // ─── Search users ───

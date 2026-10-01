@@ -1,8 +1,10 @@
 # ChatApp — WhatsApp-like Chat Application
 
-A full-stack chat application built with **Spring Boot**, **React (CDN)**, and **PostgreSQL**, containerized with **Docker**. This is the **v1 baseline** — intentionally simple (HTTP polling, no caching, single instance) to establish a performance baseline that will be improved in subsequent iterations.
+A full-stack chat application built with **Spring Boot**, **React (CDN)**, and **PostgreSQL**, containerized with **Docker**. Built as an iterative performance project — starting from a simple polling baseline (V1) and optimized through 7 versions to a WebSocket-based real-time architecture.
 
-## Architecture (v1 — Baseline)
+**Current version: V7** — WebSocket (STOMP) messaging, composite DB indexes, user-lookup caching, pagination. P95 latency ~105ms at 200 users.
+
+## Architecture (V7 — Current)
 
 ```
 ┌────────────────────────────────────┐       ┌────────────┐
@@ -10,25 +12,24 @@ A full-stack chat application built with **Spring Boot**, **React (CDN)**, and *
 │  ┌────────────┐  ┌──────────────┐ │       │ PostgreSQL │
 │  │  Static    │  │   REST API   │ │ JDBC  │  :5432     │
 │  │  HTML/JS   │  │  /api/*      │─┼──────▶│            │
-│  │  React CDN │  │              │ │       │            │
-│  └────────────┘  └──────────────┘ │       └────────────┘
-└────────────────────────────────────┘
-         │                │
-         │  Polling every │  No caching
-         │  2-3 seconds   │  No connection pool tuning
-         │                │  Single instance
+│  │  React CDN │  │  /ws (STOMP) │ │       │  Indexes:  │
+│  └────────────┘  └──────────────┘ │       │  sender_id │
+└────────────────────────────────────┘       │  +timestamp│
+         │                │                  └────────────┘
+         │  WebSocket     │  HikariCP pool=50
+         │  (STOMP)       │  @Cacheable users
+         │  No polling    │  LIMIT 15 pagination
          ▼                ▼
-      Known bottlenecks for future optimization
+      Real-time push. No background polling.
 ```
 
-### What's intentionally NOT optimized (v1)
-- **HTTP polling** instead of WebSockets — high latency, wasted bandwidth
-- **No caching** (Redis) — every request hits the database
-- **No message queue** (Kafka) — synchronous writes only
-- **Single backend instance** — no horizontal scaling
-- **No pagination** — loads all messages in a conversation
-- **Default connection pool** — HikariCP with 10 connections
-- **No build tooling** — React via CDN with Babel in-browser transform
+### What's been optimized (V1 → V7)
+- ✅ **HikariCP pool** 10 → 50 (V2)
+- ✅ **User lookup caching** `@Cacheable` on `findByUsername` (V4)
+- ✅ **Pagination** LIMIT 15 on messages + partner list (V5)
+- ✅ **Composite DB indexes** `(sender_id, timestamp DESC)` and `(receiver_id, timestamp DESC)` (V6)
+- ✅ **WebSocket (STOMP)** — HTTP polling replaced with persistent WS connection (V7)
+- **No build tooling** — React via CDN with Babel in-browser transform (intentional — keeps it simple)
 
 ## Tech Stack
 
@@ -65,7 +66,7 @@ Wait until you see `Started ChatAppApplication` in the logs, then open **http://
 2. Click **Register** and create two accounts (use two browser tabs/profiles)
 3. In one tab, search for the other user's username
 4. Click on the user to start a conversation
-5. Send messages — they appear in the other tab within 2-3 seconds (polling)
+5. Send messages — they appear instantly in the other tab via WebSocket push
 
 ## Docker Commands
 
@@ -186,14 +187,14 @@ The load test is a single Java file (`loadtest/LoadTest.java`) with **zero depen
 Make sure the app is running first (`docker compose up -d`), then run via Docker (uses the maven image already pulled during build):
 
 ```bash
-# Smoke test — 5 users, 10 seconds
-docker run --rm --network chat-app_default -v ./loadtest:/loadtest -w /loadtest maven:3.9-eclipse-temurin-17 java LoadTest.java http://backend:8080 5 10
+# Warmup (200 users, 100s — not saved, warms JVM + DB page cache)
+docker run --rm --network chat-app_default -v ./loadtest:/loadtest -w /loadtest maven:3.9-eclipse-temurin-17 java LoadTest.java http://backend:8080 200 100
 
-# Medium load — 50 users, 60 seconds
-docker run --rm --network chat-app_default -v ./loadtest:/loadtest -w /loadtest maven:3.9-eclipse-temurin-17 java LoadTest.java http://backend:8080 50 60
-
-# High load — 200 users, 120 seconds
+# High (200 users, 120s)
 docker run --rm --network chat-app_default -v ./loadtest:/loadtest -w /loadtest maven:3.9-eclipse-temurin-17 java LoadTest.java http://backend:8080 200 120
+
+# Stress (500 users, 120s)
+docker run --rm --network chat-app_default -v ./loadtest:/loadtest -w /loadtest maven:3.9-eclipse-temurin-17 java LoadTest.java http://backend:8080 500 120
 ```
 
 Arguments: `BASE_URL  NUM_USERS  DURATION_SECONDS` (defaults: `http://localhost:8080  100  60`)
@@ -205,13 +206,17 @@ Arguments: `BASE_URL  NUM_USERS  DURATION_SECONDS` (defaults: `http://localhost:
 
 ### What the load test does
 
-1. **Phase 1 (Setup)**: Registers N users via the API
-2. **Phase 2 (Load)**: Each user runs in its own thread, repeatedly:
-   - Logs in
-   - Sends a message to a random partner
-   - Fetches the conversation
-   - Lists all conversations
-3. **Phase 3 (Report)**: Prints per-endpoint p50/p90/p95/p99 latencies, error rates, throughput
+1. **Phase 1 — Register**: Creates N users via `POST /api/auth/register`
+2. **Phase 1b — Login**: Each user logs in once via `POST /api/auth/login`, stores the JWT
+3. **Phase 2 — Connect**: Each user opens a WebSocket connection and sends a STOMP `CONNECT` frame with their JWT, then subscribes to `/user/queue/messages`
+4. **Phase 3 — Load** (runs for D seconds): Each user loops:
+   - Sends a STOMP `SEND /app/chat.send` frame with a random partner's ID
+   - Waits up to **5 seconds** for its own echo back on the WS subscription (the server pushes `MessageResponse` to both sender and receiver — the sender's copy confirms the DB write completed)
+   - If the echo doesn't arrive within 5s → counted as an error (echo timeout, not a server crash)
+   - `get_conversation` and `get_conversations` run once on initial load only — not in the loop
+5. **Phase 4 — Report**: Prints per-endpoint P50/P90/P95/P99 latencies, error rate, WS push count, throughput
+
+> **Why 5 seconds?** The echo wait is a measurement deadline. In normal operation the echo arrives in ~15ms (P50). The 5s threshold only triggers under extreme TCP backpressure (seen at 0.04% rate with 500 users on Docker's bridge network). In production this would be negligible.
 
 ### Understanding the results
 
@@ -221,7 +226,8 @@ Arguments: `BASE_URL  NUM_USERS  DURATION_SECONDS` (defaults: `http://localhost:
 | **P90** | 90th percentile — only 10% of requests are slower |
 | **P95** | 95th percentile — the target for most SLAs |
 | **P99** | 99th percentile — worst-case (excluding outliers) |
-| **Error Rate** | % of requests that returned non-200 status |
+| **Error Rate** | % of requests that timed out or returned non-200 |
+| **WS Pushes** | Total WebSocket push frames received by all clients |
 
 ## Project Structure
 
@@ -255,7 +261,7 @@ chat-app/
 │   │       └── js/
 │   │           ├── api.js                   # HTTP client with console logging
 │   │           ├── auth.js                  # Login/Register components
-│   │           ├── chat.js                  # Chat UI with polling
+│   │           ├── chat.js                  # Chat UI — real-time via WebSocket (no polling)
 │   │           └── app.js                   # Main React app
 │   ├── Dockerfile
 │   └── pom.xml
@@ -310,15 +316,16 @@ ORDER BY m.timestamp DESC LIMIT 10;
 
 ## Evolution Roadmap
 
-| Version | Changes | Expected Impact |
-|---------|---------|----------------|
-| **v1 (current)** | Baseline: polling, single instance, no cache | Establish baseline p95/p99 |
-| **v2** | Add database indexes, pagination, connection pool tuning | 2-5x improvement on reads |
-| **v3** | Add Redis caching for conversations and sessions | 10x improvement on reads |
-| **v4** | WebSocket for real-time messaging (replace polling) | Sub-100ms message delivery |
-| **v5** | Kafka for async message processing | Better write throughput |
-| **v6** | Horizontal scaling (multiple backend instances + load balancer) | Linear scalability |
-| **v7** | Database read replicas, sharding | Handle millions of users |
+| Version | Changes | Result |
+|---------|---------|--------|
+| **V1** | Baseline: HTTP polling, pool=10, no cache, no pagination | P95=2,086ms @ 200u |
+| **V2** | HikariCP pool 10 → 50 | P95 improved on DB endpoints; revealed BCrypt CPU bottleneck |
+| **V3** | Fixed load test: login once per user | True baseline P95=586ms @ 200u |
+| **V4** | `@Cacheable` on user lookup | P50 improved; revealed pagination bottleneck |
+| **V5** | LIMIT 15 on messages + partner list | P95=537ms @ 200u / 531ms @ 500u; 3.6x less data |
+| **V6** | Composite indexes `(sender_id, timestamp DESC)` etc. | P95=504ms @ 200u / 499ms @ 500u |
+| **V7 (current)** | WebSocket (STOMP) — replaced HTTP polling | P95=105ms @ 200u / 99ms @ 500u; polling eliminated |
+| **V8 (planned)** | Horizontal scaling (2+ instances + load balancer) | Linear throughput increase |
 
 Each version will include load test results to demonstrate the measurable improvement.
 

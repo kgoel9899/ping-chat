@@ -223,6 +223,10 @@ public class LoadTest {
                             record("send_message", dur);
                             totalBytes.addAndGet(echo.length());
                         } else {
+                            // No active check needed: this code runs inside the load loop which exits
+                            // before close() is ever called, so a timeout can't fire during teardown.
+                            System.err.printf("[DEBUG] ECHO TIMEOUT for %s after %dms — receiveQueue size: %d, wsReceived=%d%n",
+                                wsc.me.username, dur, wsc.receiveQueue.size(), totalWsReceived.get());
                             totalErrors.incrementAndGet();
                         }
 
@@ -259,6 +263,9 @@ public class LoadTest {
     // ── WebSocket STOMP Client (zero dependencies) ──
 
     static class WsClient {
+        // Guards against false-positive errors during teardown. Set to false in close() before
+        // sending STOMP DISCONNECT so that the server's ERROR reply ("Session closed.") is ignored.
+        volatile boolean active = true;
         final UserInfo me;
         final String wsUrl;
         WebSocket ws;
@@ -294,6 +301,10 @@ public class LoadTest {
 
                         @Override
                         public void onError(WebSocket webSocket, Throwable error) {
+                            // No active check needed: onError fires on transport/protocol failures
+                            // (TCP reset, timeout, TLS error). A clean DISCONNECT + sendClose triggers
+                            // onClose instead, so onError is never called during normal teardown.
+                            System.err.printf("[DEBUG] WS onError for %s: %s%n", me.username, error.getMessage());
                             totalErrors.incrementAndGet();
                         }
                     }).join();
@@ -340,7 +351,13 @@ public class LoadTest {
                     }
                 }
             } else if (frame.startsWith("ERROR")) {
-                totalErrors.incrementAndGet();
+                // active check: when close() sends STOMP DISCONNECT the server responds with a
+                // STOMP ERROR frame ("Session closed.") before the WebSocket closes. Without this
+                // guard that would be counted as a real error. active is set false in close() first.
+                if (active) {
+                    System.err.printf("[DEBUG] STOMP ERROR frame for %s:%n%s%n", me.username, frame);
+                    totalErrors.incrementAndGet();
+                }
             }
         }
 
@@ -352,6 +369,9 @@ public class LoadTest {
         }
 
         void close() throws Exception {
+            // Set active false BEFORE sending DISCONNECT so that the server's STOMP ERROR
+            // reply ("Session closed.") is ignored by processFrame.
+            active = false;
             if (ws != null) {
                 ws.sendText(stompFrame("DISCONNECT", Map.of(), null), true);
                 ws.sendClose(WebSocket.NORMAL_CLOSURE, "done");

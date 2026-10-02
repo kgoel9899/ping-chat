@@ -1,10 +1,10 @@
 # ChatApp — WhatsApp-like Chat Application
 
-A full-stack chat application built with **Spring Boot**, **React (CDN)**, and **PostgreSQL**, containerized with **Docker**. Built as an iterative performance project — starting from a simple polling baseline (V1) and optimized through 7 versions to a WebSocket-based real-time architecture.
+A full-stack chat application built with **Spring Boot**, **React (CDN)**, **PostgreSQL**, and **Kafka**, containerized with **Docker**. Built as an iterative performance project — starting from a simple polling baseline (V1) and optimized through 8 versions to a real-time architecture with async persistence.
 
-**Current version: V7** — WebSocket (STOMP) messaging, composite DB indexes, user-lookup caching, pagination. P95 latency ~105ms at 200 users.
+**Current version: V8** — Kafka async batch persistence, WebSocket (STOMP) messaging, composite DB indexes, user-lookup caching, pagination. send_message P95 **26ms @ 200u / 70ms @ 500u** (-78/-29% vs V7).
 
-## Architecture (V7 — Current)
+## Architecture (V8 — Current)
 
 ```
 ┌────────────────────────────────────┐       ┌────────────┐
@@ -14,22 +14,27 @@ A full-stack chat application built with **Spring Boot**, **React (CDN)**, and *
 │  │  HTML/JS   │  │  /api/*      │─┼──────▶│            │
 │  │  React CDN │  │  /ws (STOMP) │ │       │  Indexes:  │
 │  └────────────┘  └──────────────┘ │       │  sender_id │
-└────────────────────────────────────┘       │  +timestamp│
-         │                │                  └────────────┘
-         │  WebSocket     │  HikariCP pool=50
-         │  (STOMP)       │  @Cacheable users
-         │  No polling    │  LIMIT 15 pagination
-         │                │  + infinite scroll
-         ▼                ▼
-      Real-time push. No background polling.
+└─────────────────┬──────────────────┘       │  +timestamp│
+         │        │                          └────────────┘
+         │  WS    │  Kafka producer                ▲
+         │  push  │  (fire-and-forget)              │
+         │        ▼                                 │
+         │  ┌──────────────┐   batch saveAll()      │
+         │  │  Kafka :9092 │──────────────────────────
+         │  │  3 partitions│   (3 consumer threads,
+         │  └──────────────┘    batch_size=50,
+         │                      max_poll=500)
+         ▼
+      Real-time push. DB write is async via Kafka.
 ```
 
-### What's been optimized (V1 → V7)
+### What's been optimized (V1 → V8)
 - ✅ **HikariCP pool** 10 → 50 (V2)
 - ✅ **User lookup caching** `@Cacheable` on `findByUsername` (V4)
 - ✅ **Pagination** LIMIT 15 per page with infinite scroll — scroll up for older messages, scroll down for more conversations (V5 + V7)
 - ✅ **Composite DB indexes** `(sender_id, timestamp DESC)` and `(receiver_id, timestamp DESC)` (V6)
 - ✅ **WebSocket (STOMP)** — HTTP polling replaced with persistent WS connection (V7)
+- ✅ **Kafka async batch persistence** — DB INSERT removed from hot path; messages published to Kafka, consumed in batches of up to 500 by 3 parallel threads, flushed via `saveAll()` with `hibernate.jdbc.batch_size=50` (V8)
 - **No build tooling** — React via CDN with Babel in-browser transform (intentional — keeps it simple)
 
 ## Tech Stack
@@ -40,6 +45,7 @@ A full-stack chat application built with **Spring Boot**, **React (CDN)**, and *
 | Backend   | Spring Boot 3.2, Java 17         |
 | Auth      | JWT (jjwt)                        |
 | Database  | PostgreSQL 16                     |
+| Messaging | Apache Kafka 3.7.2 (KRaft mode)  |
 | Container | Docker Compose                    |
 | Load Test | Java (zero dependencies)           |
 
@@ -55,8 +61,9 @@ A full-stack chat application built with **Spring Boot**, **React (CDN)**, and *
 docker compose up --build
 ```
 
-This starts 2 containers:
+This starts 3 containers:
 - **postgres** — Database on port 5432
+- **kafka** — Apache Kafka (KRaft mode, no ZooKeeper) on port 9092
 - **backend** — Spring Boot API + static frontend on port 8080
 
 Wait until you see `Started ChatAppApplication` in the logs, then open **http://localhost:8080** in your browser.
@@ -212,7 +219,7 @@ Arguments: `BASE_URL  NUM_USERS  DURATION_SECONDS` (defaults: `http://localhost:
 3. **Phase 2 — Connect**: Each user opens a WebSocket connection and sends a STOMP `CONNECT` frame with their JWT, then subscribes to `/user/queue/messages`
 4. **Phase 3 — Load** (runs for D seconds): Each user loops:
    - Sends a STOMP `SEND /app/chat.send` frame with a random partner's ID
-   - Waits up to **5 seconds** for its own echo back on the WS subscription (the server pushes `MessageResponse` to both sender and receiver — the sender's copy confirms the DB write completed)
+   - Waits up to **5 seconds** for its own echo back on the WS subscription (the server pushes `MessageResponse` to both sender and receiver immediately — before the DB write, which happens async via Kafka)
    - If the echo doesn't arrive within 5s → counted as an error (echo timeout, not a server crash)
    - `get_conversation` and `get_conversations` run once on initial load only — not in the loop
 5. **Phase 4 — Report**: Prints per-endpoint P50/P90/P95/P99 latencies, error rate, WS push count, throughput
@@ -239,6 +246,8 @@ chat-app/
 │   │   ├── ChatAppApplication.java          # Entry point
 │   │   ├── config/
 │   │   │   ├── SecurityConfig.java          # JWT security config
+│   │   │   ├── WebSocketConfig.java         # STOMP WebSocket config
+│   │   │   ├── KafkaConfig.java             # Kafka topic + batch consumer factory
 │   │   │   └── RequestLoggingFilter.java    # Request/response logger
 │   │   ├── security/
 │   │   │   ├── JwtUtil.java                 # Token generation/validation
@@ -249,7 +258,9 @@ chat-app/
 │   │   │   └── UserController.java          # User search
 │   │   ├── service/
 │   │   │   ├── AuthService.java             # Auth business logic (with logging)
-│   │   │   └── MessageService.java          # Message business logic (with logging)
+│   │   │   └── MessageService.java          # WS push + Kafka publish (no sync DB write)
+│   │   ├── kafka/
+│   │   │   └── MessagePersistenceConsumer.java # Batch consumer — saveAll() from Kafka
 │   │   ├── model/                           # JPA entities
 │   │   ├── dto/                             # Request/Response records
 │   │   ├── repository/                      # Spring Data repos
@@ -325,8 +336,9 @@ ORDER BY m.timestamp DESC LIMIT 10;
 | **V4** | `@Cacheable` on user lookup | P50 improved; revealed pagination bottleneck |
 | **V5** | LIMIT 15 on messages + partner list | P95=537ms @ 200u / 531ms @ 500u; 3.6x less data |
 | **V6** | Composite indexes `(sender_id, timestamp DESC)` etc. | P95=504ms @ 200u / 499ms @ 500u |
-| **V7 (current)** | WebSocket (STOMP) — replaced HTTP polling | P95=105ms @ 200u / 99ms @ 500u; polling eliminated |
-| **V8 (planned)** | Horizontal scaling (2+ instances + load balancer) | Linear throughput increase |
+| **V7** | WebSocket (STOMP) — replaced HTTP polling | P95=105ms @ 200u / 99ms @ 500u; polling eliminated |
+| **V8 (current)** | Kafka async batch persistence — DB write removed from hot path | P95=26ms @ 200u / 70ms @ 500u (-78/-29%) |
+| **V9 (planned)** | Horizontal scaling (2+ instances + load balancer) | Linear throughput increase |
 
 Each version will include load test results to demonstrate the measurable improvement.
 

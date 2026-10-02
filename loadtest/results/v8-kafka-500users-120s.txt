@@ -1,0 +1,285 @@
++==================================================+
+|         CHATAPP JAVA LOAD TEST (WebSocket)       |
++==================================================+
+|  Target:     http://backend:8080
+|  Users:      500
+|  Duration:   120 seconds
++==================================================+
+
+[Phase 1] Registering 500 users...
+  ...registered 50/500
+  ...registered 100/500
+  ...registered 150/500
+  ...registered 200/500
+  ...registered 250/500
+  ...registered 300/500
+  ...registered 350/500
+  ...registered 400/500
+  ...registered 450/500
+[Phase 1] Done. 500 users registered in 40.9s
+
+[Phase 1b] Logging in 500 users once...
+  ...logged in 50/500
+  ...logged in 100/500
+  ...logged in 150/500
+  ...logged in 200/500
+  ...logged in 250/500
+  ...logged in 300/500
+  ...logged in 350/500
+  ...logged in 400/500
+  ...logged in 450/500
+[Phase 1b] Done. Logged in 500 users in 35.3s
+
+[Phase 2] Connecting 500 WebSocket clients...
+  ...connected 50/500
+  ...connected 100/500
+  ...connected 150/500
+  ...connected 200/500
+  ...connected 250/500
+  ...connected 300/500
+  ...connected 350/500
+  ...connected 400/500
+  ...connected 450/500
+[Phase 2] Done. 500 WebSocket clients connected in 1.9s
+
+[Phase 3] Running load test for 120 seconds with 500 concurrent users...
+  [2s] 500 iterations, 915 requests, 0 errors, 999 ws_pushes
+  [2s] 1000 iterations, 1431 requests, 0 errors, 2001 ws_pushes
+  [3s] 1500 iterations, 1935 requests, 0 errors, 3014 ws_pushes
+  [3s] 2000 iterations, 2420 requests, 0 errors, 4001 ws_pushes
+  [4s] 2500 iterations, 2909 requests, 0 errors, 5001 ws_pushes
+  [5s] 3000 iterations, 3431 requests, 0 errors, 5999 ws_pushes
+  [5s] 3500 iterations, 3914 requests, 0 errors, 7001 ws_pushes
+  [6s] 4000 iterations, 4406 requests, 0 errors, 8000 ws_pushes
+  [6s] 4500 iterations, 4914 requests, 0 errors, 9002 ws_pushes
+  [7s] 5000 iterations, 5408 requests, 0 errors, 9998 ws_pushes
+  [7s] 5500 iterations, 5932 requests, 0 errors, 10999 ws_pushes
+  [8s] 6000 iterations, 6447 requests, 0 errors, 12001 ws_pushes
+  [9s] 6500 iterations, 6915 requests, 0 errors, 13004 ws_pushes
+  [9s] 7000 iterations, 7405 requests, 0 errors, 13999 ws_pushes
+  [10s] 7500 iterations, 7911 requests, 0 errors, 15000 ws_pushes
+  [10s] 8000 iterations, 8406 requests, 0 errors, 16000 ws_pushes
+  [11s] 8500 iterations, 8907 requests, 0 errors, 16999 ws_pushes
+  [11s] 9000 iterations, 9406 requests, 0 errors, 18002 ws_pushes
+  [12s] 9500 iterations, 9902 requests, 0 errors, 19001 ws_pushes
+  [12s] 10000 iterations, 10407 requests, 0 errors, 19999 ws_pushes
+  [13s] 10500 iterations, 10914 requests, 0 errors, 21004 ws_pushes
+  [13s] 11000 iterations, 11408 requests, 0 errors, 22002 ws_pushes
+  [14s] 11500 iterations, 11910 requests, 0 errors, 23005 ws_pushes
+  [14s] 12000 iterations, 12406 requests, 0 errors, 24002 ws_pushes
+  [15s] 12500 iterations, 12903 requests, 0 errors, 25000 ws_pushes
+  [15s] 13000 iterations, 13407 requests, 0 errors, 26002 ws_pushes
+  [16s] 13500 iterations, 13907 requests, 0 errors, 27002 ws_pushes
+  [16s] 14000 iterations, 14403 requests, 0 errors, 27999 ws_pushes
+  [17s] 14500 iterations, 14902 requests, 0 errors, 29000 ws_pushes
+  [17s] 15000 iterations, 15406 requests, 0 errors, 29999 ws_pushes
+  [18s] 15500 iterations, 15909 requests, 0 errors, 31000 ws_pushes
+  [19s] 16000 iterations, 16403 requests, 0 errors, 32000 ws_pushes
+  [19s] 16500 iterations, 16903 requests, 0 errors, 33000 ws_pushes
+  [20s] 17000 iterations, 17404 requests, 0 errors, 34000 ws_pushes
+  [20s] 17500 iterations, 17904 requests, 0 errors, 34999 ws_pushes
+  [21s] 18000 iterations, 18406 requests, 0 errors, 36000 ws_pushes
+  [21s] 18500 iterations, 18908 requests, 0 errors, 37000 ws_pushes
+  [22s] 19000 iterations, 19409 requests, 0 errors, 37999 ws_pushes
+  [22s] 19500 iterations, 19908 requests, 0 errors, 39000 ws_pushes
+  [23s] 20000 iterations, 20408 requests, 0 errors, 40000 ws_pushes
+  [23s] 20500 iterations, 20907 requests, 0 errors, 41002 ws_pushes
+  [24s] 21000 iterations, 21403 requests, 0 errors, 42000 ws_pushes
+  [24s] 21500 iterations, 21903 requests, 0 errors, 43002 ws_pushes
+  [25s] 22000 iterations, 22409 requests, 0 errors, 44001 ws_pushes
+  [25s] 22500 iterations, 22903 requests, 0 errors, 45000 ws_pushes
+  [26s] 23000 iterations, 23406 requests, 0 errors, 46004 ws_pushes
+  [26s] 23500 iterations, 23911 requests, 0 errors, 46998 ws_pushes
+  [27s] 24000 iterations, 24404 requests, 0 errors, 48000 ws_pushes
+  [27s] 24500 iterations, 24910 requests, 0 errors, 48999 ws_pushes
+  [28s] 25000 iterations, 25417 requests, 0 errors, 50000 ws_pushes
+  [28s] 25500 iterations, 25902 requests, 0 errors, 51001 ws_pushes
+  [29s] 26000 iterations, 26403 requests, 0 errors, 52000 ws_pushes
+  [29s] 26500 iterations, 26904 requests, 0 errors, 53000 ws_pushes
+  [30s] 27000 iterations, 27407 requests, 0 errors, 53999 ws_pushes
+  [31s] 27500 iterations, 27907 requests, 0 errors, 54999 ws_pushes
+  [31s] 28000 iterations, 28407 requests, 0 errors, 56003 ws_pushes
+  [32s] 28500 iterations, 28912 requests, 0 errors, 57003 ws_pushes
+  [32s] 29000 iterations, 29401 requests, 0 errors, 58000 ws_pushes
+  [33s] 29500 iterations, 29908 requests, 0 errors, 59000 ws_pushes
+  [33s] 30000 iterations, 30405 requests, 0 errors, 60002 ws_pushes
+  [34s] 30500 iterations, 30903 requests, 0 errors, 60999 ws_pushes
+  [34s] 31000 iterations, 31414 requests, 0 errors, 62003 ws_pushes
+  [35s] 31500 iterations, 31906 requests, 0 errors, 63000 ws_pushes
+  [35s] 32000 iterations, 32409 requests, 0 errors, 63999 ws_pushes
+  [36s] 32500 iterations, 32905 requests, 0 errors, 65000 ws_pushes
+  [36s] 33000 iterations, 33413 requests, 0 errors, 66000 ws_pushes
+  [37s] 33500 iterations, 33907 requests, 0 errors, 67005 ws_pushes
+  [37s] 34000 iterations, 34422 requests, 0 errors, 67998 ws_pushes
+  [38s] 34500 iterations, 34917 requests, 0 errors, 69007 ws_pushes
+  [38s] 35000 iterations, 35417 requests, 0 errors, 69999 ws_pushes
+  [39s] 35500 iterations, 35907 requests, 0 errors, 71001 ws_pushes
+  [39s] 36000 iterations, 36403 requests, 0 errors, 71999 ws_pushes
+  [40s] 36500 iterations, 36927 requests, 0 errors, 72999 ws_pushes
+  [40s] 37000 iterations, 37408 requests, 0 errors, 73999 ws_pushes
+  [41s] 37500 iterations, 37908 requests, 0 errors, 75002 ws_pushes
+  [41s] 38000 iterations, 38402 requests, 0 errors, 76000 ws_pushes
+  [42s] 38500 iterations, 38908 requests, 0 errors, 77002 ws_pushes
+  [42s] 39000 iterations, 39404 requests, 0 errors, 78000 ws_pushes
+  [43s] 39500 iterations, 39907 requests, 0 errors, 79001 ws_pushes
+  [43s] 40000 iterations, 40403 requests, 0 errors, 80000 ws_pushes
+  [44s] 40500 iterations, 40904 requests, 0 errors, 81000 ws_pushes
+  [45s] 41000 iterations, 41405 requests, 0 errors, 81999 ws_pushes
+  [45s] 41500 iterations, 41903 requests, 0 errors, 83000 ws_pushes
+  [46s] 42000 iterations, 42407 requests, 0 errors, 84000 ws_pushes
+  [46s] 42500 iterations, 42911 requests, 0 errors, 85003 ws_pushes
+  [47s] 43000 iterations, 43404 requests, 0 errors, 86002 ws_pushes
+  [47s] 43500 iterations, 43904 requests, 0 errors, 86999 ws_pushes
+  [48s] 44000 iterations, 44401 requests, 0 errors, 87999 ws_pushes
+  [48s] 44500 iterations, 44917 requests, 0 errors, 88996 ws_pushes
+  [49s] 45000 iterations, 45407 requests, 0 errors, 90000 ws_pushes
+  [49s] 45500 iterations, 45908 requests, 0 errors, 91002 ws_pushes
+  [50s] 46000 iterations, 46402 requests, 0 errors, 91999 ws_pushes
+  [50s] 46500 iterations, 46908 requests, 0 errors, 93002 ws_pushes
+  [51s] 47000 iterations, 47404 requests, 0 errors, 94000 ws_pushes
+  [51s] 47500 iterations, 47902 requests, 0 errors, 95000 ws_pushes
+  [52s] 48000 iterations, 48405 requests, 0 errors, 95998 ws_pushes
+  [52s] 48500 iterations, 48909 requests, 0 errors, 96998 ws_pushes
+  [53s] 49000 iterations, 49415 requests, 0 errors, 97999 ws_pushes
+  [53s] 49500 iterations, 49901 requests, 0 errors, 98999 ws_pushes
+  [54s] 50000 iterations, 50408 requests, 0 errors, 99998 ws_pushes
+  [54s] 50500 iterations, 50907 requests, 0 errors, 101005 ws_pushes
+  [55s] 51000 iterations, 51420 requests, 0 errors, 102002 ws_pushes
+  [55s] 51500 iterations, 51903 requests, 0 errors, 102999 ws_pushes
+  [56s] 52000 iterations, 52405 requests, 0 errors, 104002 ws_pushes
+  [57s] 52500 iterations, 52906 requests, 0 errors, 105001 ws_pushes
+  [57s] 53000 iterations, 53410 requests, 0 errors, 106004 ws_pushes
+  [58s] 53500 iterations, 53903 requests, 0 errors, 107000 ws_pushes
+  [58s] 54000 iterations, 54501 requests, 0 errors, 108087 ws_pushes
+  [59s] 54500 iterations, 54909 requests, 0 errors, 109000 ws_pushes
+  [59s] 55000 iterations, 55414 requests, 0 errors, 110000 ws_pushes
+  [60s] 55500 iterations, 55919 requests, 0 errors, 111006 ws_pushes
+  [60s] 56000 iterations, 56402 requests, 0 errors, 112000 ws_pushes
+  [61s] 56500 iterations, 56908 requests, 0 errors, 113001 ws_pushes
+  [61s] 57000 iterations, 57407 requests, 0 errors, 113998 ws_pushes
+  [62s] 57500 iterations, 57923 requests, 0 errors, 115028 ws_pushes
+  [63s] 58000 iterations, 58410 requests, 0 errors, 116001 ws_pushes
+  [63s] 58500 iterations, 58909 requests, 0 errors, 117004 ws_pushes
+  [64s] 59000 iterations, 59408 requests, 0 errors, 117999 ws_pushes
+  [64s] 59500 iterations, 59912 requests, 0 errors, 119002 ws_pushes
+  [65s] 60000 iterations, 60408 requests, 0 errors, 119998 ws_pushes
+  [65s] 60500 iterations, 60910 requests, 0 errors, 121001 ws_pushes
+  [66s] 61000 iterations, 61406 requests, 0 errors, 122000 ws_pushes
+  [66s] 61500 iterations, 61904 requests, 0 errors, 122999 ws_pushes
+  [67s] 62000 iterations, 62414 requests, 0 errors, 124000 ws_pushes
+  [67s] 62500 iterations, 62917 requests, 0 errors, 125001 ws_pushes
+  [68s] 63000 iterations, 63469 requests, 0 errors, 126008 ws_pushes
+  [69s] 63500 iterations, 63946 requests, 0 errors, 127021 ws_pushes
+  [69s] 64000 iterations, 64417 requests, 0 errors, 127999 ws_pushes
+  [70s] 64500 iterations, 64912 requests, 0 errors, 129000 ws_pushes
+  [71s] 65000 iterations, 65471 requests, 0 errors, 130001 ws_pushes
+  [71s] 65500 iterations, 65926 requests, 0 errors, 131002 ws_pushes
+  [72s] 66000 iterations, 66419 requests, 0 errors, 132002 ws_pushes
+  [72s] 66500 iterations, 66915 requests, 0 errors, 132999 ws_pushes
+  [73s] 67000 iterations, 67418 requests, 0 errors, 133999 ws_pushes
+  [73s] 67500 iterations, 67905 requests, 0 errors, 134998 ws_pushes
+  [74s] 68000 iterations, 68453 requests, 0 errors, 136098 ws_pushes
+  [75s] 68500 iterations, 68904 requests, 0 errors, 137000 ws_pushes
+  [75s] 69000 iterations, 69431 requests, 0 errors, 138002 ws_pushes
+  [76s] 69500 iterations, 69905 requests, 0 errors, 139001 ws_pushes
+  [76s] 70000 iterations, 70410 requests, 0 errors, 140002 ws_pushes
+  [77s] 70500 iterations, 70903 requests, 0 errors, 141000 ws_pushes
+  [77s] 71000 iterations, 71404 requests, 0 errors, 142000 ws_pushes
+  [78s] 71500 iterations, 71903 requests, 0 errors, 143000 ws_pushes
+  [78s] 72000 iterations, 72412 requests, 0 errors, 144003 ws_pushes
+  [79s] 72500 iterations, 72908 requests, 0 errors, 145005 ws_pushes
+  [79s] 73000 iterations, 73406 requests, 0 errors, 146000 ws_pushes
+  [80s] 73500 iterations, 73908 requests, 0 errors, 146999 ws_pushes
+  [80s] 74000 iterations, 74405 requests, 0 errors, 148001 ws_pushes
+  [81s] 74500 iterations, 74917 requests, 0 errors, 149006 ws_pushes
+  [81s] 75000 iterations, 75405 requests, 0 errors, 149998 ws_pushes
+  [82s] 75500 iterations, 75916 requests, 0 errors, 151000 ws_pushes
+  [83s] 76000 iterations, 76413 requests, 0 errors, 152001 ws_pushes
+  [83s] 76500 iterations, 76929 requests, 0 errors, 153010 ws_pushes
+  [84s] 77000 iterations, 77409 requests, 0 errors, 153999 ws_pushes
+  [84s] 77500 iterations, 77908 requests, 0 errors, 155004 ws_pushes
+  [85s] 78000 iterations, 78409 requests, 0 errors, 156001 ws_pushes
+  [85s] 78500 iterations, 78986 requests, 0 errors, 157022 ws_pushes
+  [86s] 79000 iterations, 79438 requests, 0 errors, 158007 ws_pushes
+  [87s] 79500 iterations, 79949 requests, 0 errors, 159007 ws_pushes
+  [88s] 80000 iterations, 80508 requests, 0 errors, 159995 ws_pushes
+  [88s] 80500 iterations, 81007 requests, 0 errors, 161083 ws_pushes
+  [89s] 81000 iterations, 81458 requests, 0 errors, 162013 ws_pushes
+  [90s] 81500 iterations, 81914 requests, 0 errors, 163000 ws_pushes
+  [90s] 82000 iterations, 82420 requests, 0 errors, 164002 ws_pushes
+  [91s] 82500 iterations, 82911 requests, 0 errors, 165000 ws_pushes
+  [91s] 83000 iterations, 83411 requests, 0 errors, 166001 ws_pushes
+  [92s] 83500 iterations, 83916 requests, 0 errors, 166999 ws_pushes
+  [92s] 84000 iterations, 84414 requests, 0 errors, 168001 ws_pushes
+  [93s] 84500 iterations, 84922 requests, 0 errors, 168999 ws_pushes
+  [93s] 85000 iterations, 85411 requests, 0 errors, 170004 ws_pushes
+  [94s] 85500 iterations, 85908 requests, 0 errors, 171000 ws_pushes
+  [94s] 86000 iterations, 86417 requests, 0 errors, 172002 ws_pushes
+  [95s] 86500 iterations, 86916 requests, 0 errors, 172999 ws_pushes
+  [96s] 87000 iterations, 87476 requests, 0 errors, 174050 ws_pushes
+  [96s] 87500 iterations, 87943 requests, 0 errors, 175013 ws_pushes
+  [97s] 88000 iterations, 88413 requests, 0 errors, 176012 ws_pushes
+  [97s] 88500 iterations, 88905 requests, 0 errors, 177000 ws_pushes
+  [98s] 89000 iterations, 89406 requests, 0 errors, 177999 ws_pushes
+  [98s] 89500 iterations, 89911 requests, 0 errors, 179000 ws_pushes
+  [99s] 90000 iterations, 90405 requests, 0 errors, 180006 ws_pushes
+  [100s] 90500 iterations, 90907 requests, 0 errors, 181001 ws_pushes
+  [100s] 91000 iterations, 91405 requests, 0 errors, 181998 ws_pushes
+  [101s] 91500 iterations, 91931 requests, 0 errors, 183003 ws_pushes
+  [101s] 92000 iterations, 92437 requests, 0 errors, 184005 ws_pushes
+  [102s] 92500 iterations, 92921 requests, 0 errors, 185009 ws_pushes
+  [103s] 93000 iterations, 93428 requests, 0 errors, 186000 ws_pushes
+  [103s] 93500 iterations, 93927 requests, 0 errors, 186998 ws_pushes
+  [104s] 94000 iterations, 94402 requests, 0 errors, 188000 ws_pushes
+  [104s] 94500 iterations, 94905 requests, 0 errors, 189004 ws_pushes
+  [105s] 95000 iterations, 95417 requests, 0 errors, 190021 ws_pushes
+  [105s] 95500 iterations, 95904 requests, 0 errors, 190999 ws_pushes
+  [106s] 96000 iterations, 96418 requests, 0 errors, 191999 ws_pushes
+  [107s] 96500 iterations, 96906 requests, 0 errors, 192999 ws_pushes
+  [107s] 97000 iterations, 97450 requests, 0 errors, 194000 ws_pushes
+  [108s] 97500 iterations, 97993 requests, 0 errors, 195082 ws_pushes
+  [109s] 98000 iterations, 98444 requests, 0 errors, 196013 ws_pushes
+  [109s] 98500 iterations, 98924 requests, 0 errors, 197003 ws_pushes
+  [110s] 99000 iterations, 99464 requests, 0 errors, 198049 ws_pushes
+  [111s] 99500 iterations, 99939 requests, 0 errors, 199032 ws_pushes
+  [111s] 100000 iterations, 100432 requests, 0 errors, 200002 ws_pushes
+  [112s] 100500 iterations, 100913 requests, 0 errors, 201001 ws_pushes
+  [112s] 101000 iterations, 101422 requests, 0 errors, 202005 ws_pushes
+  [113s] 101500 iterations, 101915 requests, 0 errors, 203008 ws_pushes
+  [114s] 102000 iterations, 102447 requests, 0 errors, 204024 ws_pushes
+  [114s] 102500 iterations, 102939 requests, 0 errors, 205048 ws_pushes
+  [115s] 103000 iterations, 103407 requests, 0 errors, 206003 ws_pushes
+  [115s] 103500 iterations, 103902 requests, 0 errors, 207000 ws_pushes
+  [116s] 104000 iterations, 104417 requests, 0 errors, 208005 ws_pushes
+  [117s] 104500 iterations, 104978 requests, 0 errors, 209089 ws_pushes
+  [117s] 105000 iterations, 105418 requests, 0 errors, 209999 ws_pushes
+  [118s] 105500 iterations, 105905 requests, 0 errors, 211000 ws_pushes
+  [118s] 106000 iterations, 106422 requests, 0 errors, 211998 ws_pushes
+  [119s] 106500 iterations, 106916 requests, 0 errors, 213009 ws_pushes
+  [120s] 107000 iterations, 107419 requests, 0 errors, 213998 ws_pushes
+
++==============================================================+
+|              LOAD TEST RESULTS SUMMARY (WebSocket)           |
++==============================================================+
+|  Total Requests:    108,396
+|  Total Errors:      0 (0.00%)
+|  WS Pushes Recv'd:  214,792
+|  Data Transferred:  24,725.4 KB
+|
+|  Overall Latency (send_message round-trip):
+|    Avg:   21.0 ms
+|    P50:   10 ms
+|    P90:   45 ms
+|    P95:   70 ms
+|    P99:   171 ms
+|    Max:   1,104 ms
++==============================================================+
+|  Per-Endpoint Breakdown                                      |
++==============================================================+
+|  get_conversation      count=500     avg=261     p50=200    p95=676    p99=904   ms
+|  ws_connect            count=500     avg=179     p50=173    p95=313    p99=374   ms
+|  get_conversations     count=500     avg=329     p50=266    p95=809    p99=998   ms
+|  login                 count=500     avg=70      p50=67     p95=93     p99=108   ms
+|  send_message          count=107396  avg=18      p50=10     p95=64     p99=130   ms
+|  register              count=500     avg=81      p50=76     p95=111    p99=136   ms
++==============================================================+

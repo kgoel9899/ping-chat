@@ -1,0 +1,301 @@
++==================================================+
+|         CHATAPP JAVA LOAD TEST (WebSocket)       |
++==================================================+
+|  Target:     http://backend:8080
+|  Users:      200
+|  Duration:   120 seconds
++==================================================+
+
+[Phase 1] Registering 200 users...
+  ...registered 50/200
+  ...registered 100/200
+  ...registered 150/200
+[Phase 1] Done. 200 users registered in 18.0s
+
+[Phase 1b] Logging in 200 users once...
+  ...logged in 50/200
+  ...logged in 100/200
+  ...logged in 150/200
+[Phase 1b] Done. Logged in 200 users in 14.4s
+
+[Phase 2] Connecting 200 WebSocket clients...
+  ...connected 50/200
+  ...connected 100/200
+  ...connected 150/200
+[Phase 2] Done. 200 WebSocket clients connected in 0.7s
+
+[Phase 3] Running load test for 120 seconds with 200 concurrent users...
+  [1s] 500 iterations, 911 requests, 0 errors, 996 ws_pushes
+  [2s] 1000 iterations, 1412 requests, 0 errors, 1995 ws_pushes
+  [3s] 1500 iterations, 1911 requests, 0 errors, 2995 ws_pushes
+  [3s] 2000 iterations, 2443 requests, 0 errors, 3987 ws_pushes
+  [4s] 2500 iterations, 2909 requests, 0 errors, 4986 ws_pushes
+  [4s] 3000 iterations, 3405 requests, 0 errors, 5988 ws_pushes
+  [5s] 3500 iterations, 3904 requests, 0 errors, 6982 ws_pushes
+  [5s] 4000 iterations, 4414 requests, 0 errors, 7983 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=8587
+  [6s] 4500 iterations, 4903 requests, 1 errors, 8975 ws_pushes
+  [6s] 5000 iterations, 5428 requests, 1 errors, 9972 ws_pushes
+  [7s] 5500 iterations, 5920 requests, 1 errors, 10974 ws_pushes
+  [7s] 6000 iterations, 6418 requests, 1 errors, 11971 ws_pushes
+  [8s] 6500 iterations, 6918 requests, 1 errors, 12970 ws_pushes
+  [9s] 7000 iterations, 7416 requests, 1 errors, 13968 ws_pushes
+  [9s] 7500 iterations, 7906 requests, 1 errors, 14966 ws_pushes
+  [10s] 8000 iterations, 8408 requests, 1 errors, 15968 ws_pushes
+  [10s] 8500 iterations, 8915 requests, 1 errors, 16958 ws_pushes
+  [11s] 9000 iterations, 9421 requests, 1 errors, 17964 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 4997ms ΓÇö receiveQueue size: 0, wsReceived=18097
+  [11s] 9500 iterations, 9909 requests, 2 errors, 18956 ws_pushes
+  [12s] 10000 iterations, 10412 requests, 2 errors, 19956 ws_pushes
+  [12s] 10500 iterations, 10948 requests, 2 errors, 20967 ws_pushes
+  [13s] 11000 iterations, 11406 requests, 2 errors, 21949 ws_pushes
+  [13s] 11500 iterations, 11908 requests, 2 errors, 22946 ws_pushes
+  [14s] 12000 iterations, 12410 requests, 2 errors, 23944 ws_pushes
+  [15s] 12500 iterations, 12926 requests, 2 errors, 24939 ws_pushes
+  [15s] 13000 iterations, 13410 requests, 2 errors, 25933 ws_pushes
+  [16s] 13500 iterations, 13951 requests, 2 errors, 26938 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5000ms ΓÇö receiveQueue size: 0, wsReceived=27454
+  [16s] 14000 iterations, 14409 requests, 3 errors, 27933 ws_pushes
+  [17s] 14500 iterations, 14913 requests, 3 errors, 28929 ws_pushes
+  [17s] 15000 iterations, 15404 requests, 3 errors, 29926 ws_pushes
+  [18s] 15500 iterations, 15908 requests, 3 errors, 30926 ws_pushes
+  [18s] 16000 iterations, 16409 requests, 3 errors, 31923 ws_pushes
+  [19s] 16500 iterations, 16904 requests, 3 errors, 32922 ws_pushes
+  [19s] 17000 iterations, 17409 requests, 3 errors, 33922 ws_pushes
+  [20s] 17500 iterations, 17905 requests, 3 errors, 34917 ws_pushes
+  [20s] 18000 iterations, 18407 requests, 3 errors, 35914 ws_pushes
+  [21s] 18500 iterations, 18902 requests, 3 errors, 36913 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5002ms ΓÇö receiveQueue size: 0, wsReceived=37375
+  [22s] 19000 iterations, 19409 requests, 4 errors, 37906 ws_pushes
+  [22s] 19500 iterations, 19909 requests, 4 errors, 38904 ws_pushes
+  [23s] 20000 iterations, 20411 requests, 4 errors, 39899 ws_pushes
+  [23s] 20500 iterations, 20904 requests, 4 errors, 40897 ws_pushes
+  [24s] 21000 iterations, 21412 requests, 4 errors, 41899 ws_pushes
+  [24s] 21500 iterations, 21910 requests, 4 errors, 42900 ws_pushes
+  [25s] 22000 iterations, 22414 requests, 4 errors, 43894 ws_pushes
+  [25s] 22500 iterations, 22907 requests, 4 errors, 44894 ws_pushes
+  [26s] 23000 iterations, 23402 requests, 4 errors, 45894 ws_pushes
+  [26s] 23500 iterations, 23909 requests, 4 errors, 46891 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5003ms ΓÇö receiveQueue size: 0, wsReceived=47399
+  [27s] 24000 iterations, 24406 requests, 5 errors, 47889 ws_pushes
+  [27s] 24500 iterations, 24905 requests, 5 errors, 48888 ws_pushes
+  [28s] 25000 iterations, 25408 requests, 5 errors, 49884 ws_pushes
+  [28s] 25500 iterations, 25903 requests, 5 errors, 50879 ws_pushes
+  [29s] 26000 iterations, 26405 requests, 5 errors, 51876 ws_pushes
+  [29s] 26500 iterations, 26909 requests, 5 errors, 52876 ws_pushes
+  [30s] 27000 iterations, 27406 requests, 5 errors, 53870 ws_pushes
+  [30s] 27500 iterations, 27910 requests, 5 errors, 54865 ws_pushes
+  [31s] 28000 iterations, 28406 requests, 5 errors, 55858 ws_pushes
+  [32s] 28500 iterations, 28904 requests, 5 errors, 56865 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=57344
+  [32s] 29000 iterations, 29409 requests, 6 errors, 57855 ws_pushes
+  [33s] 29500 iterations, 29912 requests, 6 errors, 58855 ws_pushes
+  [33s] 30000 iterations, 30403 requests, 6 errors, 59851 ws_pushes
+  [34s] 30500 iterations, 30904 requests, 6 errors, 60850 ws_pushes
+  [34s] 31000 iterations, 31403 requests, 6 errors, 61850 ws_pushes
+  [35s] 31500 iterations, 31904 requests, 6 errors, 62844 ws_pushes
+  [35s] 32000 iterations, 32409 requests, 6 errors, 63845 ws_pushes
+  [36s] 32500 iterations, 32906 requests, 6 errors, 64842 ws_pushes
+  [36s] 33000 iterations, 33406 requests, 6 errors, 65837 ws_pushes
+  [37s] 33500 iterations, 33910 requests, 6 errors, 66837 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 4999ms ΓÇö receiveQueue size: 0, wsReceived=67301
+  [37s] 34000 iterations, 34405 requests, 7 errors, 67832 ws_pushes
+  [38s] 34500 iterations, 34905 requests, 7 errors, 68829 ws_pushes
+  [38s] 35000 iterations, 35404 requests, 7 errors, 69825 ws_pushes
+  [39s] 35500 iterations, 35906 requests, 7 errors, 70821 ws_pushes
+  [39s] 36000 iterations, 36405 requests, 7 errors, 71819 ws_pushes
+  [40s] 36500 iterations, 36910 requests, 7 errors, 72812 ws_pushes
+  [40s] 37000 iterations, 37407 requests, 7 errors, 73812 ws_pushes
+  [41s] 37500 iterations, 37902 requests, 7 errors, 74811 ws_pushes
+  [41s] 38000 iterations, 38413 requests, 7 errors, 75811 ws_pushes
+  [42s] 38500 iterations, 38937 requests, 7 errors, 76813 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5003ms ΓÇö receiveQueue size: 0, wsReceived=76986
+  [43s] 39000 iterations, 39420 requests, 8 errors, 77811 ws_pushes
+  [43s] 39500 iterations, 39916 requests, 8 errors, 78806 ws_pushes
+  [44s] 40000 iterations, 40408 requests, 8 errors, 79802 ws_pushes
+  [44s] 40500 iterations, 40912 requests, 8 errors, 80800 ws_pushes
+  [45s] 41000 iterations, 41405 requests, 8 errors, 81795 ws_pushes
+  [45s] 41500 iterations, 41910 requests, 8 errors, 82792 ws_pushes
+  [46s] 42000 iterations, 42403 requests, 8 errors, 83789 ws_pushes
+  [46s] 42500 iterations, 42904 requests, 8 errors, 84783 ws_pushes
+  [47s] 43000 iterations, 43408 requests, 8 errors, 85775 ws_pushes
+  [47s] 43500 iterations, 43907 requests, 8 errors, 86777 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=86833
+  [48s] 44000 iterations, 44407 requests, 9 errors, 87773 ws_pushes
+  [48s] 44500 iterations, 44908 requests, 9 errors, 88772 ws_pushes
+  [49s] 45000 iterations, 45404 requests, 9 errors, 89765 ws_pushes
+  [49s] 45500 iterations, 45905 requests, 9 errors, 90760 ws_pushes
+  [50s] 46000 iterations, 46421 requests, 9 errors, 91774 ws_pushes
+  [50s] 46500 iterations, 46907 requests, 9 errors, 92760 ws_pushes
+  [51s] 47000 iterations, 47402 requests, 9 errors, 93756 ws_pushes
+  [51s] 47500 iterations, 47906 requests, 9 errors, 94753 ws_pushes
+  [52s] 48000 iterations, 48402 requests, 9 errors, 95752 ws_pushes
+  [52s] 48500 iterations, 48910 requests, 9 errors, 96754 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5003ms ΓÇö receiveQueue size: 0, wsReceived=96832
+  [53s] 49000 iterations, 49409 requests, 10 errors, 97746 ws_pushes
+  [53s] 49500 iterations, 49906 requests, 10 errors, 98740 ws_pushes
+  [54s] 50000 iterations, 50406 requests, 10 errors, 99738 ws_pushes
+  [54s] 50500 iterations, 50910 requests, 10 errors, 100735 ws_pushes
+  [55s] 51000 iterations, 51406 requests, 10 errors, 101732 ws_pushes
+  [56s] 51500 iterations, 51903 requests, 10 errors, 102732 ws_pushes
+  [56s] 52000 iterations, 52407 requests, 10 errors, 103727 ws_pushes
+  [57s] 52500 iterations, 52901 requests, 10 errors, 104720 ws_pushes
+  [57s] 53000 iterations, 53414 requests, 10 errors, 105716 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=106626
+  [58s] 53500 iterations, 53910 requests, 11 errors, 106714 ws_pushes
+  [58s] 54000 iterations, 54407 requests, 11 errors, 107708 ws_pushes
+  [59s] 54500 iterations, 54904 requests, 11 errors, 108707 ws_pushes
+  [59s] 55000 iterations, 55403 requests, 11 errors, 109706 ws_pushes
+  [60s] 55500 iterations, 55913 requests, 11 errors, 110704 ws_pushes
+  [60s] 56000 iterations, 56417 requests, 11 errors, 111703 ws_pushes
+  [61s] 56500 iterations, 56915 requests, 11 errors, 112700 ws_pushes
+  [61s] 57000 iterations, 57410 requests, 11 errors, 113703 ws_pushes
+  [62s] 57500 iterations, 57906 requests, 11 errors, 114699 ws_pushes
+  [62s] 58000 iterations, 58404 requests, 11 errors, 115695 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5002ms ΓÇö receiveQueue size: 0, wsReceived=116506
+  [63s] 58500 iterations, 58902 requests, 12 errors, 116690 ws_pushes
+  [63s] 59000 iterations, 59405 requests, 12 errors, 117688 ws_pushes
+  [64s] 59500 iterations, 59904 requests, 12 errors, 118686 ws_pushes
+  [65s] 60000 iterations, 60405 requests, 12 errors, 119685 ws_pushes
+  [65s] 60500 iterations, 60918 requests, 12 errors, 120686 ws_pushes
+  [66s] 61000 iterations, 61404 requests, 12 errors, 121679 ws_pushes
+  [66s] 61500 iterations, 61906 requests, 12 errors, 122677 ws_pushes
+  [67s] 62000 iterations, 62420 requests, 12 errors, 123679 ws_pushes
+  [67s] 62500 iterations, 62916 requests, 12 errors, 124673 ws_pushes
+  [68s] 63000 iterations, 63404 requests, 12 errors, 125667 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 4997ms ΓÇö receiveQueue size: 0, wsReceived=126296
+  [68s] 63500 iterations, 63911 requests, 13 errors, 126661 ws_pushes
+  [69s] 64000 iterations, 64415 requests, 13 errors, 127660 ws_pushes
+  [69s] 64500 iterations, 64902 requests, 13 errors, 128655 ws_pushes
+  [70s] 65000 iterations, 65402 requests, 13 errors, 129654 ws_pushes
+  [70s] 65500 iterations, 65906 requests, 13 errors, 130649 ws_pushes
+  [71s] 66000 iterations, 66406 requests, 13 errors, 131646 ws_pushes
+  [71s] 66500 iterations, 66902 requests, 13 errors, 132645 ws_pushes
+  [72s] 67000 iterations, 67409 requests, 13 errors, 133641 ws_pushes
+  [72s] 67500 iterations, 67918 requests, 13 errors, 134639 ws_pushes
+  [73s] 68000 iterations, 68402 requests, 13 errors, 135631 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=136475
+  [73s] 68500 iterations, 68931 requests, 14 errors, 136629 ws_pushes
+  [74s] 69000 iterations, 69405 requests, 14 errors, 137627 ws_pushes
+  [74s] 69500 iterations, 69912 requests, 14 errors, 138619 ws_pushes
+  [75s] 70000 iterations, 70408 requests, 14 errors, 139615 ws_pushes
+  [76s] 70500 iterations, 70911 requests, 14 errors, 140614 ws_pushes
+  [76s] 71000 iterations, 71418 requests, 14 errors, 141611 ws_pushes
+  [77s] 71500 iterations, 71905 requests, 14 errors, 142610 ws_pushes
+  [77s] 72000 iterations, 72416 requests, 14 errors, 143618 ws_pushes
+  [78s] 72500 iterations, 72905 requests, 14 errors, 144607 ws_pushes
+  [78s] 73000 iterations, 73458 requests, 14 errors, 145701 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5000ms ΓÇö receiveQueue size: 0, wsReceived=145924
+  [79s] 73500 iterations, 73903 requests, 15 errors, 146601 ws_pushes
+  [79s] 74000 iterations, 74404 requests, 15 errors, 147599 ws_pushes
+  [80s] 74500 iterations, 74907 requests, 15 errors, 148595 ws_pushes
+  [80s] 75000 iterations, 75403 requests, 15 errors, 149592 ws_pushes
+  [81s] 75500 iterations, 75905 requests, 15 errors, 150587 ws_pushes
+  [81s] 76000 iterations, 76402 requests, 15 errors, 151586 ws_pushes
+  [82s] 76500 iterations, 76903 requests, 15 errors, 152583 ws_pushes
+  [82s] 77000 iterations, 77409 requests, 15 errors, 153582 ws_pushes
+  [83s] 77500 iterations, 77908 requests, 15 errors, 154577 ws_pushes
+  [83s] 78000 iterations, 78408 requests, 15 errors, 155575 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=155792
+  [84s] 78500 iterations, 78907 requests, 16 errors, 156576 ws_pushes
+  [85s] 79000 iterations, 79408 requests, 16 errors, 157574 ws_pushes
+  [85s] 79500 iterations, 79906 requests, 16 errors, 158571 ws_pushes
+  [86s] 80000 iterations, 80404 requests, 16 errors, 159567 ws_pushes
+  [86s] 80500 iterations, 80910 requests, 16 errors, 160566 ws_pushes
+  [87s] 81000 iterations, 81406 requests, 16 errors, 161566 ws_pushes
+  [87s] 81500 iterations, 81902 requests, 16 errors, 162563 ws_pushes
+  [88s] 82000 iterations, 82412 requests, 16 errors, 163562 ws_pushes
+  [88s] 82500 iterations, 82906 requests, 16 errors, 164560 ws_pushes
+  [89s] 83000 iterations, 83415 requests, 16 errors, 165567 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=165731
+  [89s] 83500 iterations, 83904 requests, 17 errors, 166559 ws_pushes
+  [90s] 84000 iterations, 84411 requests, 17 errors, 167556 ws_pushes
+  [90s] 84500 iterations, 84910 requests, 17 errors, 168558 ws_pushes
+  [91s] 85000 iterations, 85408 requests, 17 errors, 169560 ws_pushes
+  [91s] 85500 iterations, 85907 requests, 17 errors, 170555 ws_pushes
+  [92s] 86000 iterations, 86408 requests, 17 errors, 171550 ws_pushes
+  [92s] 86500 iterations, 86928 requests, 17 errors, 172555 ws_pushes
+  [93s] 87000 iterations, 87410 requests, 17 errors, 173548 ws_pushes
+  [93s] 87500 iterations, 87906 requests, 17 errors, 174547 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=175399
+  [94s] 88000 iterations, 88403 requests, 18 errors, 175544 ws_pushes
+  [95s] 88500 iterations, 88906 requests, 18 errors, 176545 ws_pushes
+  [95s] 89000 iterations, 89407 requests, 18 errors, 177544 ws_pushes
+  [96s] 89500 iterations, 89909 requests, 18 errors, 178540 ws_pushes
+  [96s] 90000 iterations, 90406 requests, 18 errors, 179536 ws_pushes
+  [97s] 90500 iterations, 90904 requests, 18 errors, 180535 ws_pushes
+  [97s] 91000 iterations, 91411 requests, 18 errors, 181534 ws_pushes
+  [98s] 91500 iterations, 91911 requests, 18 errors, 182527 ws_pushes
+  [98s] 92000 iterations, 92424 requests, 18 errors, 183533 ws_pushes
+  [99s] 92500 iterations, 92901 requests, 18 errors, 184523 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5006ms ΓÇö receiveQueue size: 0, wsReceived=185252
+  [99s] 93000 iterations, 93404 requests, 19 errors, 185518 ws_pushes
+  [100s] 93500 iterations, 93903 requests, 19 errors, 186518 ws_pushes
+  [100s] 94000 iterations, 94404 requests, 19 errors, 187516 ws_pushes
+  [101s] 94500 iterations, 94911 requests, 19 errors, 188515 ws_pushes
+  [101s] 95000 iterations, 95403 requests, 19 errors, 189510 ws_pushes
+  [102s] 95500 iterations, 95917 requests, 19 errors, 190513 ws_pushes
+  [102s] 96000 iterations, 96408 requests, 19 errors, 191510 ws_pushes
+  [103s] 96500 iterations, 96904 requests, 19 errors, 192505 ws_pushes
+  [103s] 97000 iterations, 97408 requests, 19 errors, 193503 ws_pushes
+  [104s] 97500 iterations, 97909 requests, 19 errors, 194499 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=195343
+  [104s] 98000 iterations, 98403 requests, 20 errors, 195496 ws_pushes
+  [105s] 98500 iterations, 98905 requests, 20 errors, 196495 ws_pushes
+  [105s] 99000 iterations, 99406 requests, 20 errors, 197496 ws_pushes
+  [106s] 99500 iterations, 99902 requests, 20 errors, 198493 ws_pushes
+  [107s] 100000 iterations, 100409 requests, 20 errors, 199496 ws_pushes
+  [107s] 100500 iterations, 100913 requests, 20 errors, 200492 ws_pushes
+  [108s] 101000 iterations, 101421 requests, 20 errors, 201489 ws_pushes
+  [108s] 101500 iterations, 101908 requests, 20 errors, 202485 ws_pushes
+  [109s] 102000 iterations, 102431 requests, 20 errors, 203501 ws_pushes
+  [109s] 102500 iterations, 102909 requests, 20 errors, 204480 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5000ms ΓÇö receiveQueue size: 0, wsReceived=204995
+  [110s] 103000 iterations, 103404 requests, 21 errors, 205480 ws_pushes
+  [110s] 103500 iterations, 103911 requests, 21 errors, 206477 ws_pushes
+  [111s] 104000 iterations, 104407 requests, 21 errors, 207475 ws_pushes
+  [111s] 104500 iterations, 104911 requests, 21 errors, 208472 ws_pushes
+  [112s] 105000 iterations, 105406 requests, 21 errors, 209467 ws_pushes
+  [112s] 105500 iterations, 105909 requests, 21 errors, 210464 ws_pushes
+  [113s] 106000 iterations, 106404 requests, 21 errors, 211463 ws_pushes
+  [113s] 106500 iterations, 106904 requests, 21 errors, 212460 ws_pushes
+  [114s] 107000 iterations, 107410 requests, 21 errors, 213463 ws_pushes
+  [114s] 107500 iterations, 107904 requests, 21 errors, 214454 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5001ms ΓÇö receiveQueue size: 0, wsReceived=214851
+  [115s] 108000 iterations, 108412 requests, 22 errors, 215453 ws_pushes
+  [115s] 108500 iterations, 108906 requests, 22 errors, 216450 ws_pushes
+  [116s] 109000 iterations, 109415 requests, 22 errors, 217466 ws_pushes
+  [117s] 109500 iterations, 109905 requests, 22 errors, 218449 ws_pushes
+  [117s] 110000 iterations, 110416 requests, 22 errors, 219445 ws_pushes
+  [118s] 110500 iterations, 110918 requests, 22 errors, 220448 ws_pushes
+  [118s] 111000 iterations, 111411 requests, 22 errors, 221440 ws_pushes
+  [119s] 111500 iterations, 111905 requests, 22 errors, 222441 ws_pushes
+  [119s] 112000 iterations, 112403 requests, 22 errors, 223437 ws_pushes
+  [120s] 112500 iterations, 112908 requests, 22 errors, 224439 ws_pushes
+[DEBUG] ECHO TIMEOUT for loaduser_31_1775588471340 after 5000ms ΓÇö receiveQueue size: 0, wsReceived=224667
+
++==============================================================+
+|              LOAD TEST RESULTS SUMMARY (WebSocket)           |
++==============================================================+
+|  Total Requests:    113,212
+|  Total Errors:      23 (0.02%)
+|  WS Pushes Recv'd:  225,058
+|  Data Transferred:  25,645.2 KB
+|
+|  Overall Latency (send_message round-trip):
+|    Avg:   10.3 ms
+|    P50:   7 ms
+|    P90:   18 ms
+|    P95:   26 ms
+|    P99:   62 ms
+|    Max:   608 ms
++==============================================================+
+|  Per-Endpoint Breakdown                                      |
++==============================================================+
+|  get_conversation      count=200     avg=191     p50=164    p95=331    p99=506   ms
+|  ws_connect            count=200     avg=135     p50=122    p95=271    p99=322   ms
+|  get_conversations     count=200     avg=248     p50=260    p95=462    p99=561   ms
+|  login                 count=200     avg=72      p50=69     p95=90     p99=98    ms
+|  send_message          count=112789  avg=10      p50=7      p95=25     p99=50    ms
+|  register              count=200     avg=88      p50=79     p95=132    p99=193   ms
++==============================================================+

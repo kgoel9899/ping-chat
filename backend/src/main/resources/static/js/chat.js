@@ -59,7 +59,11 @@ function ChatPage({ user, onLogout }) {
           (msg.senderId === sel.id && msg.receiverId === user.id);
         if (isForConv) {
           setMessages((prev) => {
-            if (prev.some((m) => m.id === msg.id)) return prev; // dedup
+            // dedup by content+sender+timestamp (id is 0 for WS-pushed messages)
+            const isDup = prev.some(
+              (m) => m.senderId === msg.senderId && m.content === msg.content && m.timestamp === msg.timestamp
+            );
+            if (isDup) return prev;
             return [...prev, msg];
           });
         }

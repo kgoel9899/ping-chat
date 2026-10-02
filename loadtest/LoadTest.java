@@ -12,7 +12,8 @@ import java.util.stream.LongStream;
 
 /**
  * Zero-dependency Java load test for the ChatApp API.
- * V7: Uses WebSocket (STOMP) for sending messages and receiving push notifications.
+ * V8: Uses WebSocket (STOMP) for sending messages and receiving push notifications.
+ * DB persistence is async via Kafka — the echo confirms WS delivery, not DB commit.
  * HTTP is still used for register, login, and initial data loads.
  *
  * Usage:

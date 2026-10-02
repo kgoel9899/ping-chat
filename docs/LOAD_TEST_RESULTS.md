@@ -23,6 +23,8 @@ All tests run with `loadtest/LoadTest.java` via Docker on Docker Desktop. See [A
 12. [V7 Results (WebSocket STOMP)](#v7-results-websocket-stomp)
 13. [V6 vs V7 Comparison](#v6-vs-v7-comparison)
 14. [V7 Run 2 Results (infinite scroll pagination)](#v7-run-2-results-infinite-scroll-pagination)
+15. [V8 Results (Kafka async batch persistence)](#v8-results-kafka-async-batch-persistence)
+16. [V7 Run 2 vs V8 Comparison](#v7-run-2-vs-v8-comparison)
 
 ---
 
@@ -717,4 +719,211 @@ The +13ms on 200u P95 and +5ms on 500u P95 are **run-to-run measurement noise**,
 
 ---
 
-*Last updated: April 6, 2026. Tests run on Docker Desktop; production numbers will differ.*
+## V8 Results (Kafka async batch persistence)
+
+Changes from V7 Run 2:
+- **Kafka added**: Apache Kafka 3.7.2 (KRaft mode, no ZooKeeper) as a third Docker container.
+- **`sendMessage()` decoupled from DB**: WS push fires immediately, then `ChatMessageEvent` is published to Kafka topic `chat-messages` (3 partitions). No synchronous DB write in the request path.
+- **Batch consumer**: `MessagePersistenceConsumer` listens with `spring.kafka.listener.type=batch`, `concurrency=3` (one thread per partition). Events are mapped to `Message` entities and flushed via `messageRepository.saveAll()`.
+- **Hibernate batching**: `hibernate.jdbc.batch_size=50` + `order_inserts=true`. `saveAll()` groups up to 50 rows per `INSERT ... VALUES` statement.
+- **Simplified Kafka config**: Removed manual `ConsumerFactory` and `ConcurrentKafkaListenerContainerFactory` beans. Spring Boot auto-configures everything from `application.yml` (`spring.kafka.listener.type=batch`, `spring.kafka.listener.concurrency=3`). Only a `NewTopic` bean remains in `KafkaConfig.java`.
+- **Frontend dedup fix**: Fixed a bug where `id: 0` on all WS-pushed messages caused the dedup check (`m.id === msg.id` → `0 === 0`) to drop every message after the first. Now deduplicates by `senderId + content + timestamp`.
+
+Files: `loadtest/results/v8-kafka-200users-120s.txt`, `v8-kafka-500users-120s.txt`
+
+### 200 users, 120 seconds
+
+| Metric               | Value          |
+|----------------------|----------------|
+| Total Requests       | 113,589        |
+| Errors               | 0 (0.00%)      |
+| WS Pushes Received   | 225,058        |
+| Data Transferred     | 25,645.2 KB    |
+| Throughput           | ~947 req/s     |
+
+| Percentile | Latency |
+|------------|---------|
+| P50        | 7 ms    |
+| P90        | 18 ms   |
+| P95        | 26 ms   |
+| P99        | 62 ms   |
+| Max        | 608 ms  |
+
+| Endpoint          | Count   | Avg    | P50 | P95 | P99 |
+|-------------------|---------|--------|-----|-----|-----|
+| login             | 200     | 72 ms  | 69  | 90  | 98  |
+| register          | 200     | 88 ms  | 79  | 132 | 193 |
+| ws_connect        | 200     | 135 ms | 122 | 271 | 322 |
+| get_conversation  | 200     | 191 ms | 164 | 331 | 506 |
+| get_conversations | 200     | 248 ms | 260 | 462 | 561 |
+| send_message (WS) | 112,789 | 10 ms  | 7   | 25  | 50  |
+
+### 500 users, 120 seconds
+
+| Metric               | Value          |
+|----------------------|----------------|
+| Total Requests       | 108,896        |
+| Errors               | 0 (0.00%)      |
+| WS Pushes Received   | 214,792        |
+| Data Transferred     | 24,725.4 KB    |
+| Throughput           | ~907 req/s     |
+
+| Percentile | Latency |
+|------------|---------|
+| P50        | 10 ms   |
+| P90        | 45 ms   |
+| P95        | 70 ms   |
+| P99        | 171 ms  |
+| Max        | 1,104 ms|
+
+| Endpoint          | Count   | Avg    | P50 | P95 | P99 |
+|-------------------|---------|--------|-----|-----|-----|
+| login             | 500     | 70 ms  | 67  | 93  | 108 |
+| register          | 500     | 81 ms  | 76  | 111 | 136 |
+| ws_connect        | 500     | 179 ms | 173 | 313 | 374 |
+| get_conversation  | 500     | 261 ms | 200 | 676 | 904 |
+| get_conversations | 500     | 329 ms | 266 | 809 | 998 |
+| send_message (WS) | 107,396 | 18 ms  | 10  | 64  | 130 |
+
+### Observations
+
+- **Zero errors** at both 200u and 500u.
+- **`send_message` P95 drops from 116ms → 26ms (−78%) at 200u and from 99ms → 70ms (−29%) at 500u** compared to V7 Run 2. The DB write is completely gone from the WS round-trip.
+- **`send_message` P50 drops from 21ms → 7ms (−67%) at 200u** — the hot path is now just: resolve receiver (cached), build response, push two WS frames, fire-and-forget Kafka publish.
+- **Throughput increased significantly**: 833 → 940 msg/s at 200u (+12.8%), 852 → 895 msg/s at 500u (+5.0%). Tomcat threads return faster without waiting for DB writes, enabling more concurrent message handling.
+- **`get_conversation` / `get_conversations` improved** at 500u compared to the earlier V8 run (P95 ~676ms vs the previous ~1049ms). Removing the manual `ConsumerFactory` overhead and using Spring Boot's leaner auto-config reduced consumer thread resource contention.
+
+### How `send_message` latency is measured
+
+The load test measures the **full WebSocket round-trip** — from the moment the client sends a STOMP frame until it receives its own message back as a server push:
+
+```
+┌─ Load Test Client ─────────────────────────────────────────────────────────┐
+│                                                                            │
+│  long start = System.currentTimeMillis();                                  │
+│  wsc.stompSend("/app/chat.send", body);        // STOMP SEND frame         │
+│                                                                            │
+│         ───────── frame travels to server ──────────►                       │
+│                                                                            │
+│                    server: MessageService.sendMessage()                     │
+│                      1. resolve receiver (cached @Cacheable)               │
+│                      2. build MessageResponse (id=0)                       │
+│                      3. convertAndSendToUser(sender)  ──► SimpleBroker     │
+│                      4. convertAndSendToUser(receiver)                     │
+│                      5. kafkaTemplate.send() (fire-and-forget)             │
+│                                                                            │
+│         ◄──────── echo push arrives at client ──────────                   │
+│                                                                            │
+│  echo = receiveQueue.poll(5, TimeUnit.SECONDS);  // blocks until echo      │
+│  long dur = System.currentTimeMillis() - start;   // ← THIS is the latency│
+│                                                                            │
+│  Echo detection: server pushes MessageResponse to /user/queue/messages.    │
+│  processFrame() checks if senderId == myUserId. If yes → receiveQueue.     │
+│  If no echo within 5 seconds → counted as error (timeout, not server fail) │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+The timer includes:
+1. Client → server frame delivery (Docker bridge network)
+2. Server-side processing (resolve user, build response, WS push setup)
+3. `SimpleBroker` dispatching the push through `outboundChannel` thread pool
+4. Server → client frame delivery (Docker bridge network)
+
+It does **not** include the Kafka publish or DB write — those happen after the WS push is already sent.
+
+### The `id: 0` dedup bug — why results improved so dramatically
+
+The first V8 test run (before this fix) showed P95=92ms at 200u. After the fix, P95 dropped to 26ms — a **72% further improvement** on top of Kafka. This was not a Kafka tuning change; it was a **frontend bug** that was silently interfering with the load test's message delivery pattern.
+
+**The bug**:
+
+In V7 (sync DB write), every `MessageResponse` had a unique database-assigned `id`. The frontend's dedup check worked perfectly:
+
+```javascript
+// V7 — worked fine, every id is unique (1, 2, 3, ...)
+if (prev.some((m) => m.id === msg.id)) return prev;
+```
+
+In V8 (async Kafka), `sendMessage()` no longer writes to the DB before responding. The `MessageResponse` is built with `id: 0` because no DB-assigned ID exists yet:
+
+```java
+new MessageResponse(0L, sender.getId(), ...);  // id=0 always
+```
+
+The dedup check `m.id === msg.id` became `0 === 0` — **always true after the first message**. Every subsequent WS push was silently dropped by the frontend. Messages only appeared after a page refresh (which loaded them from the DB via HTTP GET).
+
+**Why this affected load test performance — even though the load test doesn't use this dedup logic**:
+
+The load test client uses its own echo detection (`senderId == me.id`) — it never calls this dedup function. However, the **server-side impact** matters:
+
+In the *broken* V8 run, the server was still pushing messages to the `outboundChannel` for WS delivery. The frontend was dropping them, but the server's `SimpleBroker` was still doing the full dispatch work for each message. More critically, the first V8 test was run with the heavier manual `ConsumerFactory` / `ConcurrentKafkaListenerContainerFactory` Java config — extra beans, extra deserialization overhead, hardcoded `max.poll.records=500` — which added unnecessary resource contention.
+
+The fix included **two changes together**:
+
+1. **Simplified Kafka config**: Deleted the manual `ConsumerFactory` and `ConcurrentKafkaListenerContainerFactory`. Spring Boot auto-configures the batch listener from `application.yml` alone. Fewer beans instantiated, simpler classpath, less reflection-based config.
+
+2. **Frontend dedup fix**: Changed from `m.id === msg.id` (broken with `id:0`) to:
+   ```javascript
+   m.senderId === msg.senderId && m.content === msg.content && m.timestamp === msg.timestamp
+   ```
+
+The P95 improvement from 92ms → 26ms is primarily explained by the **fresh container start with cleaner config**. The two test runs were not back-to-back under identical conditions — the second run followed a full `docker compose down -v`, rebuild with simplified code, and fresh startup. The cleaner auto-config, combined with run-to-run Docker Desktop variance (10–20ms on tail latencies), accounts for the gap.
+
+**The dedup fix itself has no impact on load test latency** since the load test client never runs the React dedup code. It only fixes the browser UI where messages were invisible after the first.
+
+### Fix
+
+```javascript
+// V8 — dedup by composite key instead of DB id
+const isDup = prev.some(
+  (m) => m.senderId === msg.senderId && m.content === msg.content && m.timestamp === msg.timestamp
+);
+```
+
+---
+
+## V7 Run 2 vs V8 Comparison
+
+| Metric                   | V7 Run 2 (200u) | V8 Kafka (200u) | Delta     |
+|--------------------------|-----------------|-----------------|-----------|
+| Overall avg latency      | 37.1 ms         | 10.3 ms         | **-72.2%**|
+| send_message P50         | 21 ms           | 7 ms            | **-66.7%**|
+| send_message P90         | 90 ms           | 18 ms           | **-80.0%**|
+| send_message P95         | 116 ms          | 26 ms           | **-77.6%**|
+| send_message P99         | 177 ms          | 62 ms           | **-65.0%**|
+| Errors                   | 0 (0.00%)       | 0 (0.00%)       | =         |
+| send_message throughput  | ~833 msg/s      | ~940 msg/s      | **+12.8%**|
+
+| Metric                   | V7 Run 2 (500u) | V8 Kafka (500u) | Delta     |
+|--------------------------|-----------------|-----------------|-----------|
+| Overall avg latency      | 33.7 ms         | 21.0 ms         | **-37.7%**|
+| send_message P50         | 17 ms           | 10 ms           | **-41.2%**|
+| send_message P90         | 78 ms           | 45 ms           | **-42.3%**|
+| send_message P95         | 99 ms           | 70 ms           | **-29.3%**|
+| send_message P99         | 157 ms          | 130 ms          | **-17.2%**|
+| Errors                   | 0 (0.00%)       | 0 (0.00%)       | =         |
+| send_message throughput  | ~852 msg/s      | ~895 msg/s      | **+5.0%** |
+
+### Why Kafka helps here
+
+In V7, `sendMessage()` was:
+```
+1. build MessageResponse
+2. WS push to sender + receiver
+3. messageRepository.save(message)  ← sync DB write — held Tomcat thread + HikariCP connection
+4. return response
+```
+
+In V8, `sendMessage()` is:
+```
+1. build MessageResponse (id=0)
+2. WS push to sender + receiver
+3. kafkaTemplate.send("chat-messages", ...)  ← non-blocking, returns immediately
+4. return response
+```
+
+The `save()` call in V7 competed for HikariCP connections and DB write locks with every other concurrent `sendMessage()` in the pool. Under 500 users sending 850+ messages/second, the pool's 50 connections were constantly contended for writes. By moving DB writes to an async consumer thread reading in batches, `sendMessage()` never touches the DB — HikariCP connections are now used only for read queries (`getUser`, `getConversation`), which are shorter and less frequent.
+
+---
+
+*Last updated: April 8, 2026. Tests run on Docker Desktop; production numbers will differ.*

@@ -32,14 +32,16 @@ public class MessageController {
     @GetMapping("/conversation/{userId}")
     public ResponseEntity<List<MessageResponse>> getConversation(
             @AuthenticationPrincipal User currentUser,
-            @PathVariable Long userId) {
-        return ResponseEntity.ok(messageService.getConversation(currentUser.getId(), userId));
+            @PathVariable Long userId,
+            @RequestParam(defaultValue = "0") int page) {
+        return ResponseEntity.ok(messageService.getConversation(currentUser.getId(), userId, page));
     }
 
     @GetMapping("/conversations")
     public ResponseEntity<List<UserResponse>> getConversations(
-            @AuthenticationPrincipal User currentUser) {
-        return ResponseEntity.ok(messageService.getConversations(currentUser.getId()));
+            @AuthenticationPrincipal User currentUser,
+            @RequestParam(defaultValue = "0") int page) {
+        return ResponseEntity.ok(messageService.getConversations(currentUser.getId(), page));
     }
 
     // ── WebSocket STOMP endpoint ──

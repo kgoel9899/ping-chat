@@ -49,16 +49,16 @@ public class MessageService {
         return response;
     }
 
-    public List<MessageResponse> getConversation(Long userId1, Long userId2) {
-        List<Message> msgs = messageRepository.findConversation(userId1, userId2, PageRequest.of(0, 15));
+    public List<MessageResponse> getConversation(Long userId1, Long userId2, int page) {
+        List<Message> msgs = messageRepository.findConversation(userId1, userId2, PageRequest.of(page, 15));
         Collections.reverse(msgs);
-        log.info("Get conversation: user1={}, user2={}, messages={}", userId1, userId2, msgs.size());
+        log.info("Get conversation: user1={}, user2={}, page={}, messages={}", userId1, userId2, page, msgs.size());
         return msgs.stream().map(this::toResponse).toList();
     }
 
-    public List<UserResponse> getConversations(Long userId) {
-        List<Long> partnerIds = messageRepository.findConversationPartnerIds(userId);
-        log.info("Get conversations: user={}, partnerIds={}", userId, partnerIds);
+    public List<UserResponse> getConversations(Long userId, int page) {
+        List<Long> partnerIds = messageRepository.findConversationPartnerIds(userId, PageRequest.of(page, 15));
+        log.info("Get conversations: user={}, page={}, partnerIds={}", userId, page, partnerIds);
         return userRepository.findAllById(partnerIds).stream()
                 .map(u -> new UserResponse(u.getId(), u.getUsername()))
                 .toList();

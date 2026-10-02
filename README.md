@@ -19,6 +19,7 @@ A full-stack chat application built with **Spring Boot**, **React (CDN)**, and *
          │  WebSocket     │  HikariCP pool=50
          │  (STOMP)       │  @Cacheable users
          │  No polling    │  LIMIT 15 pagination
+         │                │  + infinite scroll
          ▼                ▼
       Real-time push. No background polling.
 ```
@@ -26,7 +27,7 @@ A full-stack chat application built with **Spring Boot**, **React (CDN)**, and *
 ### What's been optimized (V1 → V7)
 - ✅ **HikariCP pool** 10 → 50 (V2)
 - ✅ **User lookup caching** `@Cacheable` on `findByUsername` (V4)
-- ✅ **Pagination** LIMIT 15 on messages + partner list (V5)
+- ✅ **Pagination** LIMIT 15 per page with infinite scroll — scroll up for older messages, scroll down for more conversations (V5 + V7)
 - ✅ **Composite DB indexes** `(sender_id, timestamp DESC)` and `(receiver_id, timestamp DESC)` (V6)
 - ✅ **WebSocket (STOMP)** — HTTP polling replaced with persistent WS connection (V7)
 - **No build tooling** — React via CDN with Babel in-browser transform (intentional — keeps it simple)

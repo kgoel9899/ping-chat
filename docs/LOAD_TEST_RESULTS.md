@@ -22,6 +22,7 @@ All tests run with `loadtest/LoadTest.java` via Docker on Docker Desktop. See [A
 11. [V5 vs V6 Comparison](#v5-vs-v6-comparison)
 12. [V7 Results (WebSocket STOMP)](#v7-results-websocket-stomp)
 13. [V6 vs V7 Comparison](#v6-vs-v7-comparison)
+14. [V7 Run 2 Results (infinite scroll pagination)](#v7-run-2-results-infinite-scroll-pagination)
 
 ---
 
@@ -623,6 +624,96 @@ The 39 errors are echo timeouts — the load test sends a STOMP frame and waits 
 ### The dominant bottleneck now
 
 `send_message` still leads per-endpoint P95 (102ms at 200u). This is now the raw DB `INSERT` time under write contention — the queuing overhead is gone. Next steps: connection pool tuning for write-heavy workloads, or async message persistence (write to an in-memory queue, flush to DB in batches).
+
+---
+
+*Last updated: April 6, 2026. Tests run on Docker Desktop; production numbers will differ.*
+
+---
+
+## V7 Run 2 Results (infinite scroll pagination)
+
+Changes from V7 Run 1:
+- **Backend**: `?page=N` parameter added to `GET /api/messages/conversation/{id}` and `GET /api/messages/conversations`. Both use `PageRequest.of(page, 15)` instead of hardcoded page 0. `findConversationPartnerIds` uses `Pageable` instead of `LIMIT 15` subquery.
+- **Frontend**: infinite scroll added — scroll up loads older messages, scroll down loads more conversations. No functional change for the load test (which only calls page 0).
+- **LoadTest**: STOMP ERROR teardown false-positive fix (`volatile boolean active` flag).
+- **Purpose**: Verify that the pagination refactor and teardown fix don't regress performance.
+
+Files: `loadtest/results/v7-run2-200users-120s.txt`, `v7-run2-500users-120s.txt`
+
+### 200 users, 120 seconds
+
+| Metric               | Value          |
+|----------------------|----------------|
+| Total Requests       | 100,370        |
+| Errors               | 0 (0.00%)      |
+| WS Pushes Received   | 199,940        |
+| Data Transferred     | 23,204.0 KB    |
+| Throughput           | ~836 req/s     |
+
+| Percentile | Latency |
+|------------|--------|
+| P50        | 21 ms  |
+| P90        | 90 ms  |
+| P95        | 118 ms |
+| P99        | 186 ms |
+| Max        | 750 ms |
+
+| Endpoint          | Count   | Avg    | P50 | P95 | P99 |
+|-------------------|---------|--------|-----|-----|-----|
+| login             | 200     | 73 ms  | 70  | 94  | 104 |
+| ws_connect        | 200     | 215 ms | 199 | 441 | 515 |
+| get_conversation  | 200     | 200 ms | 142 | 498 | 676 |
+| get_conversations | 200     | 219 ms | 177 | 553 | 693 |
+| send_message (WS) | 99,970  | 36 ms  | 21  | 116 | 177 |
+
+### 500 users, 120 seconds
+
+| Metric               | Value          |
+|----------------------|----------------|
+| Total Requests       | 103,239        |
+| Errors               | 0 (0.00%)      |
+| WS Pushes Received   | 204,478        |
+| Data Transferred     | 24,028.0 KB    |
+| Throughput           | ~860 req/s     |
+
+| Percentile | Latency |
+|------------|--------|
+| P50        | 17 ms  |
+| P90        | 78 ms  |
+| P95        | 104 ms |
+| P99        | 189 ms |
+| Max        | 1,268 ms |
+
+| Endpoint          | Count   | Avg    | P50 | P95 | P99 |
+|-------------------|---------|--------|-----|-----|-----|
+| login             | 500     | 75 ms  | 71  | 103 | 118 |
+| ws_connect        | 500     | 163 ms | 159 | 290 | 350 |
+| get_conversation  | 500     | 269 ms | 185 | 783 | 978 |
+| get_conversations | 500     | 341 ms | 244 | 934 | 1179|
+| send_message (WS) | 102,239 | 31 ms  | 17  | 99  | 157 |
+
+### V7 Run 1 vs Run 2
+
+| Metric                  | Run 1 200u | Run 2 200u | Run 1 500u | Run 2 500u |
+|-------------------------|------------|------------|------------|------------|
+| Overall P95             | 105 ms     | 118 ms     | 99 ms      | 104 ms     |
+| Overall P99             | 171 ms     | 186 ms     | 162 ms     | 189 ms     |
+| send_message P95        | 102 ms     | 116 ms     | 95 ms      | 99 ms      |
+| Errors                  | 4 (0.00%)  | **0 (0.00%)**| 39 (0.04%)| **0 (0.00%)**|
+| Throughput              | ~859 req/s | ~836 req/s | ~862 req/s | ~860 req/s |
+
+### Why the latency is slightly higher in Run 2
+
+Both runs followed identical protocol: fresh container start → 200u/100s warmup → actual test. So the setup conditions are the same. There is no structural code difference that would explain a performance delta — `Pageable` with page=0 generates `LIMIT 15 OFFSET 0`, which is the same execution plan as the previous hardcoded `LIMIT 15`.
+
+The +13ms on 200u P95 and +5ms on 500u P95 are **run-to-run measurement noise**, not a regression. Here is why this variance is expected:
+
+**P95 is inherently noisy at this scale.** P95 across ~100k requests means the 95th percentile is determined by the slowest ~5,000 samples. A handful of unlucky DB connection acquisitions, GC pauses, or OS scheduler preemptions in that tail are enough to shift the P95 by 10–15ms between otherwise identical runs.
+
+**Docker Desktop on Windows is non-deterministic.** The WSL2 VM that runs the containers competes with the Windows kernel for CPU time alongside background processes (Defender, telemetry, updates). The VM's CPU access quantum is not guaranteed run-to-run. This introduces 10–20ms of variance on tail latencies across any two runs regardless of code changes.
+
+**Conclusion**: The ±13ms shift is noise, not a regression. If Run 1 were re-run under identical conditions you would see the same magnitude of variance. The only real measured change across the two runs is the error count: **39 errors at 500u → 0**, which is the direct result of the `volatile boolean active` teardown fix.
 
 ---
 

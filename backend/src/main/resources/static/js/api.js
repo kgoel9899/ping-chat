@@ -54,12 +54,12 @@ const api = {
     return this.request('POST', '/api/auth/login', { username, password }, false);
   },
 
-  // Messages (HTTP — used for initial history load)
-  getConversation(userId) {
-    return this.request('GET', '/api/messages/conversation/' + userId);
+  // Messages (HTTP — used for initial history load + pagination)
+  getConversation(userId, page = 0) {
+    return this.request('GET', '/api/messages/conversation/' + userId + '?page=' + page);
   },
-  getConversations() {
-    return this.request('GET', '/api/messages/conversations');
+  getConversations(page = 0) {
+    return this.request('GET', '/api/messages/conversations?page=' + page);
   },
 
   // Users

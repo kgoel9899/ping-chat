@@ -21,7 +21,6 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
            "MAX(m.timestamp) AS last_message " +
            "FROM messages m WHERE m.sender_id = :userId OR m.receiver_id = :userId " +
            "GROUP BY partner_id " +
-           "ORDER BY last_message DESC " +
-           "LIMIT 15) sub", nativeQuery = true)
-    List<Long> findConversationPartnerIds(@Param("userId") Long userId);
+           "ORDER BY last_message DESC) sub", nativeQuery = true)
+    List<Long> findConversationPartnerIds(@Param("userId") Long userId, Pageable pageable);
 }

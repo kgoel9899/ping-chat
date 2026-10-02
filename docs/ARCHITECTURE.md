@@ -229,11 +229,11 @@ Both the sender and receiver receive a WS push. The sender's push confirms the w
 
 ### Initial page load (HTTP)
 
-On first opening the chat, two HTTP GET requests fetch existing data:
-- `GET /api/messages/conversations` — list of partners (runs once)
-- `GET /api/messages/conversation/{id}` — last 15 messages (runs once per conversation opened)
+On first opening the chat, two HTTP GET requests fetch existing data (page 0):
+- `GET /api/messages/conversations?page=0` — first 15 partners (scroll down loads page 1, 2, ...)
+- `GET /api/messages/conversation/{id}?page=0` — last 15 messages (scroll up loads page 1, 2, ...)
 
-After that, all updates arrive via WebSocket push. No polling.
+After that, all new messages arrive via WebSocket push. Older history is loaded on demand via scroll-triggered pagination.
 
 ---
 
@@ -248,7 +248,7 @@ backend/src/main/resources/static/
   js/
     api.js            # HTTP fetch wrapper + WebSocket STOMP connection manager
     auth.js           # LoginPage + RegisterPage components
-    chat.js           # ChatPage (real-time via WebSocket, no polling)
+    chat.js           # ChatPage (real-time via WebSocket, infinite scroll pagination)
     app.js            # Root App component with auth state
 ```
 
@@ -444,7 +444,7 @@ docker run ... | Tee-Object -FilePath "loadtest\results\v7-websocket-200users-12
 
 **Evidence**: `get_conversation` avg went from 19ms (10 users) to 937ms (200 users) — 49x degradation, the worst of any endpoint.
 
-**Fix (V5)**: `PageRequest.of(0, 15)` on `findConversation`; SQL `LIMIT 15` subquery on `findConversationPartnerIds`. Payloads now bounded to 15 rows regardless of history length. P95 537ms → 531ms.
+**Fix (V5)**: `PageRequest.of(page, 15)` on `findConversation`; SQL subquery with `Pageable` on `findConversationPartnerIds`. Both endpoints accept `?page=N` (default 0). Frontend uses infinite scroll — scroll up in messages loads older pages, scroll down in sidebar loads more conversations. Payloads bounded to 15 rows per request regardless of history length. P95 537ms → 531ms.
 
 **Fix (V6)**: Composite indexes `idx_msg_sender_ts (sender_id, timestamp DESC)` and `idx_msg_receiver_ts (receiver_id, timestamp DESC)`. Both paginated queries now walk a pre-ordered index instead of scanning+sorting. `get_conversation` P95 499ms → 462ms (−7.4%). Overall P95 504ms @ 200u / 499ms @ 500u.
 
@@ -492,7 +492,7 @@ That\u2019s **~0.83 req/s per user just for polling**, even when nothing changed
 | 1    | HikariCP pool 10 → 50                        | **DONE V2** | DB endpoints 1.5-2.9x faster; revealed BCrypt saturation                     |
 | 2    | Fix load test: login once per user            | **DONE V3** | True baseline: P95=586ms, 693 req/s at 200 users                             |
 | 3    | Cache user lookups (`@Cacheable`)             | **DONE V4** | P50 improved; revealed pagination as next bottleneck                          |
-| 4    | Pagination LIMIT 15 (messages + partner list) | **DONE V5** | P95 537ms @ 200u / 531ms @ 500u; 3.6x less data; P95 converges across scales |
+| 4    | Pagination LIMIT 15 per page + infinite scroll | **DONE V5** | P95 537ms @ 200u / 531ms @ 500u; 3.6x less data; P95 converges across scales |
 | 5    | Composite DB index on messages                | **DONE V6** | P95 504ms @ 200u / 499ms @ 500u; read queries use pre-ordered index scans     |
 | 6    | WebSockets / SSE for messaging                | **DONE V7** | send_message P95 574ms \u2192 102ms; polling eliminated; overall P95 ~105ms        |
 | 7    | Horizontal scaling (2+ instances)             | Planned     | Linear throughput increase                                                    |

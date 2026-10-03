@@ -102,12 +102,14 @@ const ws = {
   sendMessage(receiverId, content) {
     if (!this.client || !this.client.connected) {
       console.error('[WS] Not connected');
-      return;
+      return null;
     }
+    const clientId = crypto.randomUUID();
     this.client.publish({
       destination: '/app/chat.send',
-      body: JSON.stringify({ receiverId, content }),
+      body: JSON.stringify({ receiverId, content, clientId }),
     });
+    return clientId;
   },
 
   disconnect() {

@@ -871,14 +871,29 @@ The P95 improvement from 92ms → 26ms is primarily explained by the **fresh con
 
 **The dedup fix itself has no impact on load test latency** since the load test client never runs the React dedup code. It only fixes the browser UI where messages were invisible after the first.
 
-### Fix
+### Fix — client-generated UUID (the WhatsApp/Signal approach)
+
+The composite-key fix worked but had a theoretical edge case: two identical messages from the same user at the same millisecond would be falsely deduped. The real solution is to generate the ID on the **client** before sending, so no DB round-trip is ever needed for uniqueness.
 
 ```javascript
-// V8 — dedup by composite key instead of DB id
-const isDup = prev.some(
-  (m) => m.senderId === msg.senderId && m.content === msg.content && m.timestamp === msg.timestamp
-);
+// api.js — generate UUID before sending
+const clientId = crypto.randomUUID();   // RFC 4122 v4, browser CSPRNG
+this.client.publish({
+  destination: '/app/chat.send',
+  body: JSON.stringify({ receiverId, content, clientId }),
+});
 ```
+
+The server adds `clientId` to `MessageRequest` and echoes it back in `MessageResponse`. The frontend deduplicates by `clientId` when present:
+
+```javascript
+// chat.js — clientId for WS-pushed messages, composite key fallback for DB-loaded messages
+const isDup = msg.clientId
+  ? prev.some((m) => m.clientId === msg.clientId)
+  : prev.some((m) => m.senderId === msg.senderId && m.content === msg.content && m.timestamp === msg.timestamp);
+```
+
+This is exactly how WhatsApp and Signal work: the client assigns a unique ID at the moment the user taps Send. The server's DB-assigned `id` is only used for history/pagination — never for real-time dedup.
 
 ---
 

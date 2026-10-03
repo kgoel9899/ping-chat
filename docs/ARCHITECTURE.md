@@ -240,9 +240,33 @@ Client (WebSocket)               Backend                         Kafka          
   |                                |                               |                   |
 ```
 
-The WS push fires **before** the Kafka publish. The sender's echo arrives before the message hits the database. The `id: 0` in the response reflects that no DB-assigned ID exists yet.
+The WS push fires **before** the Kafka publish. The sender's echo arrives before the message hits the database. The `id: 0` in the response reflects that no DB-assigned ID exists yet — `clientId` (a client-generated UUID) is used for dedup instead.
 
 The Kafka consumer runs on 3 threads (one per partition), polling up to 500 events per cycle and writing them via `saveAll()` with `hibernate.jdbc.batch_size=50` (Hibernate groups them into sub-batches of 50 rows per `INSERT ... VALUES` statement).
+
+### `outboundChannel` — where WS push tail latency comes from
+
+`convertAndSendToUser()` does not write to the WebSocket directly. It **submits the serialized frame as a task to the `outboundChannel` thread pool** (Spring's `ThreadPoolTaskExecutor`, default corePoolSize=1). A thread in that pool picks it up, serializes the `MessageResponse` to a STOMP MESSAGE frame, and writes it to the WebSocket session.
+
+```
+sendMessage() thread                outboundChannel thread pool (default: 1 thread)
+──────────────────────────────      ──────────────────────────────────────────────
+convertAndSendToUser(sender)  ─┐
+convertAndSendToUser(receiver) ─┤──► queue task ──► serialize JSON
+kafkaTemplate.send()           ─┘                   write STOMP frame to sender WS
+return response                                      write STOMP frame to receiver WS
+```
+
+At low concurrency the queue is empty and tasks run instantly (P50 = 7ms). At 500 users sending ~900 messages/second, **1,800 push tasks per second** are enqueued to a single thread — queue backup causes the P95 = 70ms tail. This is the primary remaining latency source after Kafka removed the DB write.
+
+To push below ~20ms P95 at 500u, tune the pool:
+
+```java
+@Override
+public void configureClientOutboundChannel(ChannelRegistration registration) {
+    registration.taskExecutor().corePoolSize(4).maxPoolSize(8);
+}
+```
 
 ### Initial page load (HTTP)
 
@@ -502,7 +526,7 @@ That\u2019s **~0.83 req/s per user just for polling**, even when nothing changed
 
 ### Bottleneck #7: Frontend `id: 0` dedup bug (FIXED in V8)
 
-**The bug**: In V8, `sendMessage()` no longer writes to the DB before responding. The `MessageResponse` is built with `id: 0L` because no database-assigned ID exists yet — the INSERT happens asynchronously via Kafka. The frontend's dedup check in `chat.js` was:
+**The bug**: In V8, `sendMessage()` no longer writes to the DB before responding. The `MessageResponse` is built with `id: 0L` because no database-assigned ID exists yet — the INSERT happens asynchronously via Kafka. The frontend's original dedup check in `chat.js` was:
 
 ```javascript
 if (prev.some((m) => m.id === msg.id)) return prev; // dedup
@@ -510,17 +534,75 @@ if (prev.some((m) => m.id === msg.id)) return prev; // dedup
 
 With every message having `id: 0`, `0 === 0` was always true after the first message. Every subsequent WS push was **silently dropped** — messages appeared only after a page refresh (which loaded them from the DB via HTTP GET).
 
-**The fix**: Dedup by a composite key instead of the database ID:
+**Why dedup exists at all**: The server pushes the same `MessageResponse` to both the sender and the receiver. The sender is subscribed to `/user/queue/messages` and receives the echo. Without dedup, the sender would see their own message twice: once from the echo, once from the receiver's push routing.
+
+**Initial fix (composite key)**: Dedup by `senderId + content + timestamp`. Works in practice but has a theoretical edge case — two identical messages sent by the same user at the exact same millisecond would be falsely deduped.
+
+**Final fix (client-generated UUID — the WhatsApp/Signal approach)**:
+
+The root problem is that dedup relied on a *server-generated* ID that isn't available yet. The solution is to generate the ID on the *client*, before the message is sent, so the ID is always known regardless of DB timing.
 
 ```javascript
-const isDup = prev.some(
-  (m) => m.senderId === msg.senderId && m.content === msg.content && m.timestamp === msg.timestamp
-);
+// api.js — generate UUID before sending
+const clientId = crypto.randomUUID();
+this.client.publish({
+  destination: '/app/chat.send',
+  body: JSON.stringify({ receiverId, content, clientId }),
+});
+return clientId;
 ```
 
-**Impact on load test**: None — the load test client uses its own echo detection (`senderId == me.id` in `processFrame()`) and never runs the React dedup logic. The bug only affected the browser UI.
+The server echoes it back unchanged in `MessageResponse`:
 
-**Lesson**: When you move a DB write to an async path, audit every consumer of the response for assumptions about database-generated fields (`id`, `createdAt`, etc.). The `id: 0` broke a seemingly unrelated dedup check in the frontend.
+```java
+// MessageService.java
+new MessageResponse(0L, ..., request.clientId());
+```
+
+The frontend deduplicates by `clientId` when present (WS-pushed messages), falling back to composite key for DB-loaded messages which have no `clientId`:
+
+```javascript
+// chat.js
+const isDup = msg.clientId
+  ? prev.some((m) => m.clientId === msg.clientId)
+  : prev.some((m) => m.senderId === msg.senderId && m.content === msg.content && m.timestamp === msg.timestamp);
+```
+
+`crypto.randomUUID()` generates a RFC 4122 v4 UUID (e.g. `"550e8400-e29b-41d4-a716-446655440000"`) using the browser's CSPRNG. The probability of two UUIDs colliding is $\frac{1}{2^{122}}$ — practically impossible.
+
+**How WhatsApp and Signal handle this**: Both generate a client-side ID (WhatsApp uses a 20-byte random string encoded in hex; Signal uses a UUID) at the moment the user taps Send. This ID travels with the message through the server and is echoed back in the push. The server's DB-assigned `rowid` is irrelevant for real-time display — it's only used for pagination/history queries. The client-side ID is also used for delivery receipts and message editing.
+
+**Impact on load test**: None — the load test uses `senderId == me.id` for echo detection, not `clientId`. The change is transparent to the test.
+
+**Lesson**: When you move a DB write to an async path, audit every consumer of the response for assumptions about database-generated fields (`id`, `createdAt`, etc.). The general pattern: **any ID used for client-side dedup should be client-generated, not server-generated**.
+
+### Bottleneck #8: React `key` collision from `id: 0` (FIXED)
+
+**The bug**: Every WS-pushed `MessageResponse` has `id: 0` (no DB write in V8's hot path). In `chat.js`, the messages list renders with:
+
+```jsx
+// Broken — all WS messages have key=0
+<div key={msg.id} ...>
+```
+
+React uses `key` to identify list items across re-renders. When all keys are `0`, React cannot distinguish items — it reuses and patches the same DOM node instead of creating new ones. Symptoms:
+- Messages can render in wrong visual order
+- A state update on one message (e.g., read receipt) can visually apply to the wrong bubble
+- New-message mount animations may not trigger since React thinks the node already exists
+
+**No impact on load test** — the test never renders JSX. Pure browser UI correctness fix.
+
+**Fix**:
+
+```jsx
+// chat.js — use clientId for WS-pushed messages; fall back to id+timestamp for DB-loaded history
+<div key={msg.clientId ?? (msg.id + '_' + msg.timestamp)} ...>
+```
+
+- WS-pushed messages: `clientId` is `crypto.randomUUID()` — globally unique, always present
+- DB-loaded history messages: `clientId` is `null` → falls back to `"42_2026-04-08T19:35:01"` — unique by PK + timestamp
+
+**Lesson**: Any list item in React that has a server-assigned ID which may not be available yet (optimistic UI, async persistence) needs a client-generated stable key. The `clientId` introduced for dedup in Bottleneck #7 solves this simultaneously — one UUID per message serves both purposes.
 
 ---
 
@@ -808,9 +890,277 @@ docker compose exec kafka \
 
 Spring's `KafkaAdmin` will recreate the topic on next backend startup.
 
+### Understanding Kafka broker log output
+
+Run `docker compose logs kafka` and look for these key log lines:
+
+```
+[2026-04-08 10:00:01,102] INFO [QuorumController id=1] QuorumController 1 transitioning to ACTIVE (KRaft)
+```
+**What it means**: The KRaft controller is now the active leader. You'll see this once on startup. Normal.
+
+```
+[2026-04-08 10:00:02,441] INFO [BrokerLifecycleManager id=1] The broker has caught up, Starting the transition to UNFENCED (KRaft)
+```
+**What it means**: The broker has replicated enough log to start accepting client connections. Normal — appears a few seconds after startup.
+
+```
+[2026-04-08 10:00:03,018] INFO [GroupCoordinator 1]: Stabilized group chatapp-persistence generation 1 ...
+```
+**What it means**: The Spring Kafka consumer group has completed its initial rebalance and all 3 partitions are assigned to your consumers. This is the "ready" signal — messages will start being consumed.
+
+```
+[2026-04-08 10:00:03,050] INFO [GroupCoordinator 1]: Assignment received from leader, leader is consumer-chatapp-persistence-1-...
+  chatapp-persistence-1: [chat-messages-0, chat-messages-1]
+  chatapp-persistence-2: [chat-messages-2]
+```
+**What it means**: Partition assignment map. With `concurrency=3`, Spring creates 3 consumer threads; Kafka distributes the 3 partitions among them. If you only see 1–2 threads initially, the others join within seconds. Normal.
+
+```
+[2026-04-08 10:02:10,100] INFO [GroupCoordinator 1]: Member consumer-chatapp-persistence-1-... in group chatapp-persistence has failed ...
+```
+**What it means**: A consumer thread missed its heartbeat (e.g., long GC pause, overloaded host). Kafka will trigger a rebalance. During the rebalance (~seconds), those partitions are unassigned and messages queue up in Kafka. If this happens repeatedly under load, the consumer is too slow — increase `listener.concurrency` or batch size.
+
+```
+WARN [ReplicaManager] ...  not enough ISR...
+```
+**What it means**: Under-replicated partitions. Harmless in a single-broker setup (replication-factor=1 means ISR is always exactly the leader). In a multi-broker cluster this would be a red flag.
+
+```
+ERROR Unexpected exception in handleReceive
+ERROR Failed to obtain DB connection
+```
+**What it means**: Actual errors. If you see `ERROR` in Kafka broker logs, something is structurally wrong (disk full, corrupt log segment, OOM). Rare in this single-broker dev setup.
+
+**Pattern summary**:
+| Log keyword | Normal? | What to do |
+|---|---|---|
+| `ACTIVE (KRaft)` / `UNFENCED` | ✅ Yes | Startup sequence — ignore |
+| `Stabilized group ... generation N` | ✅ Yes | Consumer group ready |
+| `PreparingRebalance` / `CompletingRebalance` | ⚠️ On startup only | Mid-run rebalance = consumers too slow |
+| `Member ... has failed` | ❌ No | Consumer crashed or GC-stalled |
+| `ERROR` | ❌ No | Investigate immediately |
+
+### Understanding Spring Kafka consumer logs (backend side)
+
+The backend logs contain the consumer-side view. Filter for Kafka lines:
+
+```bash
+docker compose logs -f backend | grep -iE "kafka|partition|rebalanc|lag|batch"
+```
+
+Key lines to know:
+
+```
+INFO  c.c.k.MessagePersistenceConsumer : Persisting batch of 47 messages
+```
+**What it means**: Your `@KafkaListener` received and is flushing a batch of 47 records to PostgreSQL via `saveAll()`. Batch sizes typically vary 10–200 depending on producer rate. During load tests at 500u you'll see sizes of 200+.
+
+```
+INFO  o.s.k.l.ConcurrentMessageListenerContainer: partitions assigned: [chat-messages-0, chat-messages-1]
+```
+**What it means**: This Spring log confirms the specific partitions assigned to this container thread. You should see 3 lines like this (one per concurrency thread) within seconds of backend startup.
+
+```
+WARN  o.a.k.c.c.i.ConsumerCoordinator: Offset commit failed with retriable exception
+```
+**What it means**: The consumer tried to commit its read offset to Kafka but failed. Spring Kafka will retry automatically. If this happens repeatedly, check Kafka broker health with `docker compose logs kafka`.
+
+```
+ERROR o.s.k.l.KafkaMessageListenerContainer: Error handler
+com.fasterxml.jackson.databind.exc.InvalidDefinitionException: Cannot construct instance of MessageRequest ...
+```
+**What it means**: The Kafka message JSON could not be deserialized into your DTO. Cause: you renamed or removed a field in `MessageRequest` / `ChatMessageEvent` without restarting Kafka (old messages in the topic have the old schema). Fix: delete the topic, restart the backend, messages from the new schema will serialize cleanly.
+
+```
+WARN  o.a.k.c.NetworkClient: [Consumer clientId=...] Connection to node -1 (kafka/172.x.x.x:9092) could not be established.
+```
+**What it means**: The backend cannot reach the Kafka broker at startup. Usually timing — the `depends_on: kafka: condition: service_healthy` in docker-compose should prevent this. If you see it after startup, run `docker compose ps` to check if the kafka container is actually healthy.
+
+### The NOT_COORDINATOR startup flood — annotated real log
+
+On a fresh cluster (or first run after `docker compose down -v`), the backend logs will be flooded with messages like this for ~1 second:
+
+```
+INFO ConsumerCoordinator: Group coordinator kafka:9092 (id: 2147483646 rack: null) is unavailable or invalid due to cause: coordinator unavailable.
+INFO ConsumerCoordinator: Requesting disconnect from last known coordinator kafka:9092 (id: 2147483646 rack: null)
+INFO ConsumerCoordinator: JoinGroup failed: This is not the correct coordinator. Marking coordinator unknown.
+INFO NetworkClient: Client requested disconnect from node 2147483646
+INFO ConsumerCoordinator: Discovered group coordinator kafka:9092 (id: 2147483646 rack: null)
+```
+
+This looks alarming but it is **completely normal on first startup**. Here is exactly what is happening and why.
+
+#### Root cause: `__consumer_offsets` doesn't exist yet
+
+Kafka tracks consumer group progress (which offsets each group has committed) in an internal topic called `__consumer_offsets`. On a brand-new cluster this topic doesn't exist. KRaft has to:
+1. Create it automatically
+2. Elect a leader for the relevant partition
+
+Until that is done, the broker can't coordinate any consumer group. Every `JoinGroup` request bounces back with `NOT_COORDINATOR` (the broker's way of saying "the coordinator partition isn't ready"). Your 3 consumer threads retry aggressively every 50–100ms (`reconnect.backoff.ms=50`), creating the flood.
+
+#### What is `id: 2147483646`?
+
+Not a real broker. Kafka client code assigns bootstrap connections a pseudo-node ID of `Integer.MAX_VALUE - 1 = 2,147,483,646`. It is the pre-identification channel to `kafka:9092` before the broker has announced its real ID.
+
+- `kafka:9092 (id: 2147483646)` — same physical host, accessed via the **bootstrap channel**
+- `kafka:9092 (id: 1)` — same physical host, accessed after the broker identified itself as `KAFKA_NODE_ID: 1`
+
+All `NOT_COORDINATOR` responses come via the bootstrap channel. Once the `__consumer_offsets` partition is ready, responses switch to `id: 1`.
+
+#### MemberIdRequiredException — the pivot point
+
+The flood ends when this line appears:
+
+```
+INFO ConsumerCoordinator: Request joining group due to: rebalance failed due to
+  'The group member needs to have a valid member id before actually entering a consumer group.'
+  (MemberIdRequiredException)
+```
+
+This is **KIP-394** — a deliberate two-step handshake added in Kafka 2.4. The coordinator is now up and accepting connections. It rejects the first `JoinGroup` with this error to force the client to resubmit with an assigned UUID (`consumer-chatapp-persistence-2-9549fe15-...`). It is not an error — it is the moment the coordinator finally became ready.
+
+#### The ~6 second gap before `Successfully joined`
+
+After MemberIds are assigned, there is still a ~6 second wait:
+
+```
+19:34:55  MemberIdRequiredException (coordinator now ready)
+19:35:01  Successfully joined group with generation 1
+```
+
+`group.initial.rebalance.delay.ms` defaults to **3000ms**. When the first consumer joins, the coordinator intentionally waits 3 seconds for other members to join before computing the partition assignment. With 3 threads joining + the JoinGroup → SyncGroup round-trip, total is ~6 seconds.
+
+#### The full resolved state
+
+```
+19:35:01  Successfully joined group with generation Generation{generationId=1, ...}  ← all 3 consumers
+19:35:01  Finished assignment: consumer-1→[P0], consumer-2→[P1], consumer-3→[P2]
+19:35:01  Found no committed offset for partition chat-messages-0/1/2
+19:35:01  Resetting offset to position FetchPosition{offset=0, ...}    ← auto.offset.reset=earliest
+19:35:01  KafkaMessageListenerContainer: chatapp-persistence: partitions assigned ✅
+```
+
+"Found no committed offset" means no prior offset was persisted for this group (fresh cluster). With `auto.offset.reset=earliest`, each partition resets to offset 0 — the consumer will read from the beginning. If you restart the backend mid-load-test, any messages produced since offset 0 will be re-consumed, potentially causing duplicate DB inserts. To avoid this: don't restart the backend during a test; let Kafka commit offsets before shutting down.
+
+#### Summary table for this startup sequence
+
+| Phase | Log keyword | Duration | Normal? |
+|---|---|---|---|
+| `__consumer_offsets` creating | `coordinator unavailable` / `NOT_COORDINATOR` / `JoinGroup failed` | ~750ms | ✅ Yes, first startup only |
+| Coordinator ready, UUID assignment | `MemberIdRequiredException` | instant | ✅ Yes, KIP-394 handshake |
+| Rebalance delay + SyncGroup | *(silence)* | ~6s | ✅ Yes, `initial.rebalance.delay.ms` |
+| Fully ready | `partitions assigned` + `KafkaMessageListenerContainer` | instant | ✅ Target state |
+
+On subsequent restarts (without `docker compose down -v`) the `__consumer_offsets` topic already exists, so the whole startup completes in under 1 second with no `NOT_COORDINATOR` messages.
+
 ---
 
 ## PostgreSQL Inspection
+
+### View PostgreSQL container logs
+
+```bash
+# All postgres logs since container start
+docker compose logs postgres
+
+# Live tail — useful during a load test
+docker compose logs -f postgres
+
+# Last 50 lines
+docker compose logs --tail=50 postgres
+```
+
+### Understanding PostgreSQL log output
+
+PostgreSQL logs everything it considers noteworthy. Here are the key lines you will see:
+
+```
+PostgreSQL 16.2 on x86_64-pc-linux-musl, compiled by gcc (Alpine...) 13.2.1 ...
+```
+**What it means**: Version banner — startup is beginning. Normal.
+
+```
+LOG:  database system was shut down at 2026-04-08 09:55:01 UTC
+LOG:  database system is ready to accept connections
+```
+**What it means**: Clean startup. If you see `database system was not properly shut down; automatic recovery in progress` instead, the container was killed mid-write. PostgreSQL will replay the WAL to recover. Normal after `docker compose down` without `--volumes`; no action needed.
+
+```
+LOG:  connection received: host=172.18.0.4 port=51234
+LOG:  connection authorized: user=chatapp database=chatapp application_name=HikariPool-1
+```
+**What it means**: A new TCP connection was accepted and authenticated. With HikariCP pool size 50, you'll see 50 of these on backend startup. `HikariPool-1` in `application_name` confirms it's your Spring app. Normal.
+
+```
+FATAL:  password authentication failed for user "chatapp"
+```
+**What it means**: Wrong password. Check `DB_PASSWORD` in docker-compose.yml environment vs. `POSTGRES_PASSWORD` on the postgres service. They must match.
+
+```
+FATAL:  database "chatapp" does not exist
+```
+**What it means**: The database was not created. Either the `POSTGRES_DB: chatapp` env var was missing when the volume was first created, or the volume has data from a differently-named DB. Fix: `docker compose down -v` to wipe the volume, then `docker compose up`.
+
+```
+LOG:  autovacuum: found 0 removable, 1284 nonremovable row versions in table "public.messages"
+LOG:  autovacuum: processed table "public.messages"
+```
+**What it means**: PostgreSQL is running its background maintenance (autovacuum) to reclaim dead rows and update planner statistics. Normal — you'll see this after load tests when many rows were inserted. No action needed.
+
+```
+ERROR:  duplicate key value violates unique constraint "messages_pkey"
+DETAIL:  Key (id)=(0) already exists.
+```
+**What it means**: You tried to insert a message with `id=0` (or a duplicate PK). In this app this would indicate you accidentally persisted a WS-pushed `MessageResponse` (which has `id=0`) rather than the Kafka-consumed `ChatMessageEvent`. Shouldn't happen in normal flow.
+
+**Pattern summary**:
+| Log keyword | Normal? | What to do |
+|---|---|---|
+| `database system is ready` | ✅ Yes | Startup complete |
+| `connection authorized: ... HikariPool-1` | ✅ Yes | App connected |
+| `automatic recovery in progress` | ⚠️ Warn | Clean shutdown missed; auto-heals |
+| `FATAL: password authentication failed` | ❌ No | Check env var mismatch |
+| `FATAL: database ... does not exist` | ❌ No | `docker compose down -v` + restart |
+| `autovacuum: processed table` | ✅ Yes | Background maintenance |
+| `ERROR: duplicate key` | ❌ No | Logic bug — double-insert same PK |
+
+### Enable slow query logging
+
+By default PostgreSQL does not log individual query timings. To find slow queries during debugging:
+
+```bash
+# Connect to the running instance
+docker compose exec postgres psql -U chatapp -d chatapp
+```
+
+```sql
+-- Log any query that takes longer than 100ms
+ALTER SYSTEM SET log_min_duration_statement = '100';
+SELECT pg_reload_conf();
+```
+
+Now run your load test, then check logs:
+
+```bash
+docker compose logs postgres | grep "duration:"
+```
+
+You will see lines like:
+```
+LOG:  duration: 243.012 ms  statement: select ... from messages where sender_id=$1 or receiver_id=$1 ...
+LOG:  duration: 18.401 ms   statement: insert into messages ... values ($1,$2,...),($1,$2,...) ...  [50 parameters]
+```
+
+The first line tells you a conversation-fetch query is slow (missing or unused index). The second shows a batch INSERT with 50 parameter groups — this confirms Hibernate batching is working.
+
+To disable after debugging:
+```sql
+ALTER SYSTEM RESET log_min_duration_statement;
+SELECT pg_reload_conf();
+```
+
+> The setting is session-persistent (written to `postgresql.auto.conf` inside the volume) — it survives container restarts until explicitly reset.
 
 ### Connect to the database
 

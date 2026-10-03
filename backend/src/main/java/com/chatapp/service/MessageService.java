@@ -45,7 +45,8 @@ public class MessageService {
                 receiver.getUsername(),
                 request.content(),
                 now,
-                false
+                false,
+                request.clientId() // echoed back so client can dedup by stable UUID
         );
 
         // Push to both users via WebSocket FIRST (instant delivery)
@@ -88,7 +89,8 @@ public class MessageService {
                 message.getReceiver().getUsername(),
                 message.getContent(),
                 message.getTimestamp(),
-                message.isRead()
+                message.isRead(),
+                null // DB-loaded messages have no clientId
         );
     }
 }

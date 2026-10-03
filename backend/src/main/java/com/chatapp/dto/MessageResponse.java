@@ -10,5 +10,6 @@ public record MessageResponse(
     String receiverUsername,
     String content,
     LocalDateTime timestamp,
-    boolean read
+    boolean read,
+    String clientId   // echoed back from MessageRequest for client-side dedup
 ) {}

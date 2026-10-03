@@ -59,10 +59,11 @@ function ChatPage({ user, onLogout }) {
           (msg.senderId === sel.id && msg.receiverId === user.id);
         if (isForConv) {
           setMessages((prev) => {
-            // dedup by content+sender+timestamp (id is 0 for WS-pushed messages)
-            const isDup = prev.some(
-              (m) => m.senderId === msg.senderId && m.content === msg.content && m.timestamp === msg.timestamp
-            );
+            // If server echoed the client-generated UUID, use it for exact dedup.
+            // Fall back to composite key for DB-loaded messages (clientId is null there).
+            const isDup = msg.clientId
+              ? prev.some((m) => m.clientId === msg.clientId)
+              : prev.some((m) => m.senderId === msg.senderId && m.content === msg.content && m.timestamp === msg.timestamp);
             if (isDup) return prev;
             return [...prev, msg];
           });
@@ -248,7 +249,7 @@ function ChatPage({ user, onLogout }) {
               {loadingMsgs && <div style={{ textAlign: 'center', padding: '10px', color: '#8696a0' }}>Loading older messages...</div>}
               {messages.map((msg) => (
                 <div
-                  key={msg.id}
+                  key={msg.clientId ?? (msg.id + '_' + msg.timestamp)}
                   className={'message ' + (msg.senderId === user.id ? 'sent' : 'received')}
                 >
                   <div>{msg.content}</div>

@@ -1,50 +1,51 @@
-// Main App — manages auth state and routing
-function App() {
-  const [user, setUser] = React.useState(null);
-  const [page, setPage] = React.useState('login'); // 'login' | 'register'
+// Main App — manages auth state and routing (vanilla JS, no React)
+(function () {
+  var root = document.getElementById('root');
+  var user = null;
+  var page = 'login'; // 'login' | 'register'
 
-  // Restore session from localStorage
-  React.useEffect(() => {
-    const token = localStorage.getItem('token');
-    const userData = localStorage.getItem('user');
-    if (token && userData) {
-      try {
-        setUser(JSON.parse(userData));
-        console.log('[App] Restored session for', JSON.parse(userData).username);
-      } catch (e) {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-      }
-    }
-  }, []);
-
-  const handleAuth = (data) => {
+  function handleAuth(data) {
     localStorage.setItem('token', data.token);
-    const u = { id: data.userId, username: data.username };
-    localStorage.setItem('user', JSON.stringify(u));
-    setUser(u);
-    console.log('[App] Logged in as', u.username);
-  };
+    user = { id: data.userId, username: data.username };
+    localStorage.setItem('user', JSON.stringify(user));
+    console.log('[App] Logged in as', user.username);
+    render();
+  }
 
-  const handleLogout = () => {
-    console.log('[App] Logging out', user?.username);
+  function handleLogout() {
+    console.log('[App] Logging out', user ? user.username : '');
     ws.disconnect();
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    setUser(null);
-    setPage('login');
-  };
-
-  if (!user) {
-    if (page === 'register') {
-      return <RegisterPage onRegister={handleAuth} onSwitch={() => setPage('login')} />;
-    }
-    return <LoginPage onLogin={handleAuth} onSwitch={() => setPage('register')} />;
+    user = null;
+    page = 'login';
+    render();
   }
 
-  return <ChatPage user={user} onLogout={handleLogout} />;
-}
+  function render() {
+    if (!user) {
+      if (page === 'register') {
+        renderRegisterPage(root, handleAuth, function () { page = 'login'; render(); });
+      } else {
+        renderLoginPage(root, handleAuth, function () { page = 'register'; render(); });
+      }
+      return;
+    }
+    renderChatPage(root, user, handleLogout);
+  }
 
-// Mount
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<App />);
+  // Restore session from localStorage
+  var token = localStorage.getItem('token');
+  var userData = localStorage.getItem('user');
+  if (token && userData) {
+    try {
+      user = JSON.parse(userData);
+      console.log('[App] Restored session for', user.username);
+    } catch (e) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+    }
+  }
+
+  render();
+})();

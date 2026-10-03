@@ -53,16 +53,34 @@ public class MessageService {
         messagingTemplate.convertAndSendToUser(sender.getUsername(), "/queue/messages", response);
         messagingTemplate.convertAndSendToUser(receiver.getUsername(), "/queue/messages", response);
 
-        // Publish to Kafka for async DB persistence
+        // Publish to Kafka for async DB persistence, with direct-DB fallback
         ChatMessageEvent event = new ChatMessageEvent(
                 sender.getId(), sender.getUsername(),
                 receiver.getId(), receiver.getUsername(),
                 request.content()
         );
-        kafkaTemplate.send("chat-messages", sender.getId().toString(), event);
+        try {
+            kafkaTemplate.send("chat-messages", sender.getId().toString(), event).get();
+            log.info("Message published to Kafka: sender={} -> receiver={}", sender.getId(), receiver.getId());
+        } catch (Exception ex) {
+            log.warn("Kafka unavailable, falling back to direct DB write: {}", ex.getMessage());
+            persistDirectly(sender, receiver, request.content());
+        }
 
-        log.info("Message pushed via WS and published to Kafka: sender={} -> receiver={}", sender.getId(), receiver.getId());
         return response;
+    }
+
+    /**
+     * Fallback: persist message directly to the database when Kafka is unavailable.
+     */
+    private void persistDirectly(User sender, User receiver, String content) {
+        Message message = Message.builder()
+                .sender(sender)
+                .receiver(receiver)
+                .content(content)
+                .build();
+        messageRepository.save(message);
+        log.info("DIRECT DB SAVE (Kafka fallback): message saved to database, sender={} -> receiver={}", sender.getId(), receiver.getId());
     }
 
     public List<MessageResponse> getConversation(Long userId1, Long userId2, int page) {

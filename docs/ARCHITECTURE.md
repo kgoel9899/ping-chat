@@ -42,7 +42,7 @@ ChatApp is a WhatsApp-like real-time messaging application built as an iterative
 | Database     | PostgreSQL                          | 16-alpine |
 | Auth         | JWT (jjwt library, HMAC-SHA384)     | 0.12.5    |
 | Passwords    | BCrypt (Spring Security)            | -         |
-| Frontend     | React 18 via CDN (no build step)    | 18.x      |
+| Frontend     | Vanilla JS (no React, no build step) | ES2020    |
 | Container    | Docker Compose                      | -         |
 | Load Test    | Java HttpClient (zero dependencies) | 17        |
 | Messaging    | Apache Kafka (KRaft, no ZooKeeper)  | 3.7.2     |
@@ -54,7 +54,7 @@ ChatApp is a WhatsApp-like real-time messaging application built as an iterative
 ```
 +-----------------------------------------------------------+
 |                     User's Browser                         |
-|  React 18 (CDN) + Babel in-browser JSX transform          |
+|  Vanilla JS (no React, no build step)                     |
 |  Connects via WebSocket (STOMP) on page load              |
 |  HTTP GET: /api/messages/conversation/{x} (once on open)  |
 |  HTTP GET: /api/messages/conversations   (once on open)   |
@@ -280,22 +280,24 @@ After that, all new messages arrive via WebSocket push. Older history is loaded 
 
 ## Frontend Architecture
 
-The frontend has **zero build tooling** — no webpack, no vite, no npm:
+The frontend has **zero build tooling** — no webpack, no vite, no npm, **no React**:
 
 ```
 backend/src/main/resources/static/
-  index.html          # Loads React 18 + Babel + SockJS + STOMP.js from CDN
+  index.html          # Loads only STOMP.js from CDN; no React, no Babel
   css/app.css         # WhatsApp dark theme
   js/
     api.js            # HTTP fetch wrapper + WebSocket STOMP connection manager
-    auth.js           # LoginPage + RegisterPage components
-    chat.js           # ChatPage (real-time via WebSocket, infinite scroll pagination)
-    app.js            # Root App component with auth state
+    auth.js           # renderLoginPage() + renderRegisterPage() — vanilla DOM
+    chat.js           # renderChatPage() — vanilla JS, real-time WS, infinite scroll, dedup
+    app.js            # IIFE entry point — manages auth state, renders pages
 ```
 
-- **React 18** loaded via `<script src="unpkg.com/react@18/...">` 
-- **Babel standalone** transforms JSX in the browser at runtime
-- **No routing library** — simple conditional rendering based on auth state
+- **Vanilla JavaScript** — all DOM rendering via `innerHTML` and `addEventListener`
+- **No React, no Babel, no JSX** — scripts loaded as plain `<script>` tags
+- **STOMP.js** is the only CDN dependency (for WebSocket communication)
+- Dedup logic preserved: `clientId` (UUID) for WS-pushed messages, composite key fallback for DB-loaded messages
+- XSS prevention: user-generated content rendered via `escapeHtml()` (creates a text node, reads `innerHTML`)
 - All API calls go through `api.js` which:
   - Adds `Authorization: Bearer` header from localStorage
   - Logs every request: method, URL, duration, response size
@@ -1276,7 +1278,10 @@ A single statement with 50 `(?,?,?,?,?)` placeholders confirms batching.
 | 5    | Composite DB index on messages                | **DONE V6** | P95 504ms @ 200u / 499ms @ 500u; read queries use pre-ordered index scans     |
 | 6    | WebSockets / SSE for messaging                | **DONE V7** | send_message P95 574ms \u2192 102ms; polling eliminated; overall P95 ~105ms        |
 | 7    | Kafka async batch persistence                 | **DONE V8** | DB INSERT removed from hot path; batch writes via saveAll()                   |
-| 8    | Horizontal scaling (2+ instances)             | Planned     | Linear throughput increase                                                    |
+| 8    | Kafka resilience — direct DB fallback          | **DONE V9** | If Kafka is down, messages persist directly to DB; zero message loss          |
+| 9    | Frontend migrated to vanilla JS (no React)     | **DONE V9** | Removed React/Babel CDN deps; pure DOM rendering; smaller page load           |
+| 10   | DB save logging                                | **DONE V9** | `log.info` on every batch save (Kafka consumer) and fallback save             |
+| 11   | Horizontal scaling (2+ instances)             | Planned     | Linear throughput increase                                                    |
 | 9    | Read replicas for PostgreSQL                  | Future      | Separate read/write workloads                                                 |
 
 **Current baseline (V8)**: send_message P95 **26ms @ 200u / 70ms @ 500u** — 78% / 29% lower than V7 Run 2 (116ms / 99ms). DB INSERT fully removed from the hot path. Zero errors at both scales.
@@ -1284,4 +1289,93 @@ A single statement with 50 `(?,?,?,?,?)` placeholders confirms batching.
 
 ---
 
-*Last updated: April 6, 2026. Tests run on Docker Desktop; production numbers will differ.*
+## V9 Changes — Kafka Resilience, Vanilla JS Frontend, DB Logging
+
+### Kafka Resilience: Direct DB Fallback
+
+**Problem**: If Kafka goes down, `kafkaTemplate.send()` would fail and messages would be lost — the WS push already went out, but no persistence happens.
+
+**Solution**: `MessageService.sendMessage()` now wraps the Kafka publish in a try/catch. If the `CompletableFuture` from `kafkaTemplate.send().get()` throws (Kafka unreachable, timeout, etc.), the message is **persisted directly to PostgreSQL** via `messageRepository.save()` as a synchronous fallback.
+
+```java
+try {
+    kafkaTemplate.send("chat-messages", sender.getId().toString(), event).get();
+    log.info("Message published to Kafka");
+} catch (Exception ex) {
+    log.warn("Kafka unavailable, falling back to direct DB write: {}", ex.getMessage());
+    persistDirectly(sender, receiver, request.content());
+}
+```
+
+**Kafka producer timeouts** (configured in `application.yml`):
+- `delivery.timeout.ms: 5000` — total time allowed for send (including retries)
+- `request.timeout.ms: 2000` — per-request timeout to broker
+- `max.block.ms: 3000` — max time `send()` blocks waiting for metadata
+- `retries: 3` — retry on transient failures before giving up
+
+These ensure the fallback triggers within ~5 seconds max, rather than hanging indefinitely.
+
+**Behavior**:
+| Kafka status | What happens |
+|---|---|
+| Kafka up | Normal path: Kafka publish → async batch consumer → `saveAll()` to DB |
+| Kafka down | Fallback: direct `messageRepository.save()` → immediate DB write |
+| Kafka comes back | Next message automatically routes through Kafka again (no restart needed) |
+
+### Steps to Simulate Kafka Failure
+
+```bash
+# 1. Start everything
+docker compose up -d --build
+
+# 2. Open the app at http://localhost:8080, send some messages (verify they work)
+
+# 3. Stop Kafka (simulates Kafka crash)
+docker compose stop kafka
+
+# 4. Send messages in the UI — they should still deliver via WebSocket
+#    Backend logs will show: "Kafka unavailable, falling back to direct DB write"
+docker compose logs -f backend | Select-String "Kafka|DIRECT DB"
+
+# 5. Verify messages are in the database
+docker compose exec postgres psql -U chatapp -d chatapp -c "SELECT COUNT(*) FROM messages;"
+
+# 6. Bring Kafka back
+docker compose start kafka
+
+# 7. Send new messages — they should go through Kafka again
+#    Backend logs will show: "Message published to Kafka"
+```
+
+### DB Save Logging
+
+All database persistence paths now emit `log.info` statements:
+
+1. **Kafka consumer path** (`MessagePersistenceConsumer`):
+   ```
+   INFO KAFKA CONSUMER: Received batch of 47 messages from topic
+   INFO DATABASE SAVE: Batch persisted 47 messages to PostgreSQL
+   INFO   -> Saved message: sender=1 (alice) -> receiver=2 (bob), contentLength=12
+   ```
+
+2. **Direct DB fallback** (`MessageService.persistDirectly()`):
+   ```
+   WARN Kafka unavailable, falling back to direct DB write: ...
+   INFO DIRECT DB SAVE (Kafka fallback): message saved to database, sender=1 -> receiver=2
+   ```
+
+### Frontend: React → Vanilla JS Migration
+
+**Why**: Removed the React 18 + Babel CDN dependency. The app now loads faster (no 130KB+ React bundle, no Babel transpilation at runtime) and is easier to understand.
+
+**What changed**:
+- `index.html`: Removed React, ReactDOM, and Babel `<script>` tags. Scripts are plain `<script src="...">` instead of `<script type="text/babel">`.
+- `auth.js`: `LoginPage` / `RegisterPage` React components → `renderLoginPage()` / `renderRegisterPage()` functions that use `innerHTML` + `addEventListener`.
+- `chat.js`: `ChatPage` React component with `useState`/`useEffect`/`useRef`/`useCallback` → `chatState` object + `renderConversationList()` / `renderMessages()` / `renderChatArea()` functions. All state is in a plain JS object.
+- `app.js`: React root mount → IIFE that reads `localStorage` and calls the appropriate render function.
+
+**All features preserved**: WebSocket real-time messaging, dedup (clientId + composite fallback), infinite scroll pagination (messages + conversations), user search, session restore from localStorage, XSS protection via `escapeHtml()`.
+
+---
+
+*Last updated: April 8, 2026. Tests run on Docker Desktop; production numbers will differ.*

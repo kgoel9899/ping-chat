@@ -20,6 +20,11 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      retries: 3
+      properties:
+        delivery.timeout.ms: 5000
+        request.timeout.ms: 2000
+        max.block.ms: 3000
     consumer:
       group-id: chatapp-persistence
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer

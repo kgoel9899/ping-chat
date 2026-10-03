@@ -6,7 +6,8 @@ const api = {
     return localStorage.getItem('token');
   },
 
-  headers(withAuth = true) {
+  headers(withAuth) {
+    if (withAuth === undefined) withAuth = true;
     const h = { 'Content-Type': 'application/json' };
     if (withAuth) {
       const token = this.getToken();
@@ -15,50 +16,54 @@ const api = {
     return h;
   },
 
-  async request(method, path, body, withAuth = true) {
+  async request(method, path, body, withAuth) {
+    if (withAuth === undefined) withAuth = true;
     const opts = {
-      method,
+      method: method,
       headers: this.headers(withAuth),
     };
     if (body) opts.body = JSON.stringify(body);
 
-    console.log(`[API] ${method} ${path}`, body || '');
-    const start = Date.now();
+    console.log('[API] ' + method + ' ' + path, body || '');
+    var start = Date.now();
 
-    const res = await fetch(this.baseUrl + path, opts);
-    const duration = Date.now() - start;
+    var res = await fetch(this.baseUrl + path, opts);
+    var duration = Date.now() - start;
 
     if (res.status === 401) {
-      console.warn(`[API] 401 Unauthorized on ${path} (${duration}ms)`);
+      console.warn('[API] 401 Unauthorized on ' + path + ' (' + duration + 'ms)');
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       window.location.reload();
       throw new Error('Unauthorized');
     }
 
-    const data = await res.json();
+    var data = await res.json();
     if (!res.ok) {
-      console.error(`[API] ${res.status} ${path} (${duration}ms)`, data);
+      console.error('[API] ' + res.status + ' ' + path + ' (' + duration + 'ms)', data);
       throw new Error(data.error || 'Request failed');
     }
 
-    console.log(`[API] ${res.status} ${path} (${duration}ms)`, Array.isArray(data) ? `[${data.length} items]` : 'ok');
+    console.log('[API] ' + res.status + ' ' + path + ' (' + duration + 'ms)',
+      Array.isArray(data) ? '[' + data.length + ' items]' : 'ok');
     return data;
   },
 
   // Auth
   register(username, email, password) {
-    return this.request('POST', '/api/auth/register', { username, email, password }, false);
+    return this.request('POST', '/api/auth/register', { username: username, email: email, password: password }, false);
   },
   login(username, password) {
-    return this.request('POST', '/api/auth/login', { username, password }, false);
+    return this.request('POST', '/api/auth/login', { username: username, password: password }, false);
   },
 
   // Messages (HTTP — used for initial history load + pagination)
-  getConversation(userId, page = 0) {
+  getConversation(userId, page) {
+    if (page === undefined) page = 0;
     return this.request('GET', '/api/messages/conversation/' + userId + '?page=' + page);
   },
-  getConversations(page = 0) {
+  getConversations(page) {
+    if (page === undefined) page = 0;
     return this.request('GET', '/api/messages/conversations?page=' + page);
   },
 
@@ -69,30 +74,31 @@ const api = {
 };
 
 // ── WebSocket (STOMP) connection manager ──
-const ws = {
+var ws = {
   client: null,
   onMessage: null, // callback set by chat.js
 
   connect(token) {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const brokerURL = `${protocol}//${location.host}/ws`;
+    var self = this;
+    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var brokerURL = protocol + '//' + location.host + '/ws';
 
     this.client = new StompJs.Client({
-      brokerURL,
+      brokerURL: brokerURL,
       connectHeaders: { Authorization: 'Bearer ' + token },
       reconnectDelay: 3000,
-      onConnect: () => {
+      onConnect: function () {
         console.log('[WS] STOMP connected');
-        this.client.subscribe('/user/queue/messages', (frame) => {
-          const msg = JSON.parse(frame.body);
+        self.client.subscribe('/user/queue/messages', function (frame) {
+          var msg = JSON.parse(frame.body);
           console.log('[WS] Message received:', msg.id);
-          if (this.onMessage) this.onMessage(msg);
+          if (self.onMessage) self.onMessage(msg);
         });
       },
-      onStompError: (frame) => {
+      onStompError: function (frame) {
         console.error('[WS] STOMP error', frame.headers['message']);
       },
-      onWebSocketClose: () => {
+      onWebSocketClose: function () {
         console.warn('[WS] WebSocket closed');
       },
     });
@@ -104,10 +110,10 @@ const ws = {
       console.error('[WS] Not connected');
       return null;
     }
-    const clientId = crypto.randomUUID();
+    var clientId = crypto.randomUUID();
     this.client.publish({
       destination: '/app/chat.send',
-      body: JSON.stringify({ receiverId, content, clientId }),
+      body: JSON.stringify({ receiverId: receiverId, content: content, clientId: clientId }),
     });
     return clientId;
   },

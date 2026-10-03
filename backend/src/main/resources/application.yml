@@ -25,12 +25,18 @@ spring:
         delivery.timeout.ms: 5000
         request.timeout.ms: 2000
         max.block.ms: 3000
+        reconnect.backoff.ms: 1000
+        reconnect.backoff.max.ms: 10000
     consumer:
       group-id: chatapp-persistence
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
         spring.json.trusted.packages: com.chatapp.dto
+        reconnect.backoff.ms: 1000
+        reconnect.backoff.max.ms: 10000
+        fetch.min.bytes: 10000
+        fetch.max.wait.ms: 5000
       auto-offset-reset: earliest
     listener:
       type: batch
@@ -42,3 +48,12 @@ jwt:
 
 server:
   port: 8080
+
+logging:
+  level:
+    # Suppress noisy UnknownHostException / "Error connecting to node" when Kafka is stopped
+    org.apache.kafka.clients.NetworkClient: ERROR
+    # Suppress low-level socket disconnect noise
+    org.apache.kafka.common.network.Selector: ERROR
+    # Keep our app logs fully visible
+    com.chatapp: INFO

@@ -1,10 +1,10 @@
 # ChatApp — WhatsApp-like Chat Application
 
-A full-stack chat application built with **Spring Boot**, **React (CDN)**, **PostgreSQL**, and **Kafka**, containerized with **Docker**. Built as an iterative performance project — starting from a simple polling baseline (V1) and optimized through 8 versions to a real-time architecture with async persistence.
+A full-stack chat application built with **Spring Boot**, **Vanilla JS**, **PostgreSQL**, and **Kafka**, containerized with **Docker**. Built as an iterative performance project — starting from a simple polling baseline (V1) and optimized through 9 versions to a real-time architecture with async persistence and Kafka resilience.
 
-**Current version: V8** — Kafka async batch persistence, WebSocket (STOMP) messaging, composite DB indexes, user-lookup caching, pagination. send_message P95 **26ms @ 200u / 70ms @ 500u** (-78/-29% vs V7).
+**Current version: V9** — Kafka circuit breaker with background health probe, batch tuning, vanilla JS frontend. Zero message loss when Kafka goes down. send_message P95 **26ms @ 200u / 70ms @ 500u** (unchanged from V8 — V9 is a resilience + frontend upgrade).
 
-## Architecture (V8 — Current)
+## Architecture (V9 — Current)
 
 ```
 ┌────────────────────────────────────┐       ┌────────────┐
@@ -12,7 +12,7 @@ A full-stack chat application built with **Spring Boot**, **React (CDN)**, **Pos
 │  ┌────────────┐  ┌──────────────┐ │       │ PostgreSQL │
 │  │  Static    │  │   REST API   │ │ JDBC  │  :5432     │
 │  │  HTML/JS   │  │  /api/*      │─┼──────▶│            │
-│  │  React CDN │  │  /ws (STOMP) │ │       │  Indexes:  │
+│  │ Vanilla JS │  │  /ws (STOMP) │ │       │  Indexes:  │
 │  └────────────┘  └──────────────┘ │       │  sender_id │
 └─────────────────┬──────────────────┘       │  +timestamp│
          │        │                          └────────────┘
@@ -35,13 +35,13 @@ A full-stack chat application built with **Spring Boot**, **React (CDN)**, **Pos
 - ✅ **Composite DB indexes** `(sender_id, timestamp DESC)` and `(receiver_id, timestamp DESC)` (V6)
 - ✅ **WebSocket (STOMP)** — HTTP polling replaced with persistent WS connection (V7)
 - ✅ **Kafka async batch persistence** — DB INSERT removed from hot path; messages published to Kafka, consumed in batches of up to 500 by 3 parallel threads, flushed via `saveAll()` with `hibernate.jdbc.batch_size=50` (V8)
-- **No build tooling** — React via CDN with Babel in-browser transform (intentional — keeps it simple)
+- **No build tooling** — Vanilla JS with zero framework dependencies (STOMP.js is the only CDN import)
 
 ## Tech Stack
 
 | Layer     | Technology                        |
 |-----------|----------------------------------|
-| Frontend  | React 18 via CDN (plain JS, no build) |
+| Frontend  | Vanilla JS (no React, no build step)    |
 | Backend   | Spring Boot 3.2, Java 17         |
 | Auth      | JWT (jjwt)                        |
 | Database  | PostgreSQL 16                     |
@@ -337,10 +337,236 @@ ORDER BY m.timestamp DESC LIMIT 10;
 | **V5** | LIMIT 15 on messages + partner list | P95=537ms @ 200u / 531ms @ 500u; 3.6x less data |
 | **V6** | Composite indexes `(sender_id, timestamp DESC)` etc. | P95=504ms @ 200u / 499ms @ 500u |
 | **V7** | WebSocket (STOMP) — replaced HTTP polling | P95=105ms @ 200u / 99ms @ 500u; polling eliminated |
-| **V8 (current)** | Kafka async batch persistence — DB write removed from hot path | P95=26ms @ 200u / 70ms @ 500u (-78/-29%) |
-| **V9 (planned)** | Horizontal scaling (2+ instances + load balancer) | Linear throughput increase |
+| **V8** | Kafka async batch persistence — DB write removed from hot path | P95=26ms @ 200u / 70ms @ 500u (-78/-29%) |
+| **V9 (current)** | Kafka circuit breaker, batch tuning, vanilla JS frontend | Zero message loss when Kafka goes down |
 
 Each version will include load test results to demonstrate the measurable improvement.
+
+---
+
+## Kafka Resilience — How It Works & Simulation
+
+### Architecture
+
+Every message takes this path when Kafka is healthy:
+
+```
+sendMessage()
+  └─ WebSocket push to sender + receiver   (instant, ~3ms)
+  └─ kafkaTemplate.send()                  (fire-and-forget to Kafka topic)
+       └─ Kafka consumer polls batch       (up to 5s batch window)
+            └─ messageRepository.saveAll() (batch INSERT to PostgreSQL)
+```
+
+When Kafka is unreachable, a **circuit breaker** switches the persistence path:
+
+```
+Circuit CLOSED (Kafka up):   → Kafka → batch consumer → saveAll()
+Circuit OPEN   (Kafka down): → direct messageRepository.save() immediately
+                               @Scheduled background probe every 10s tests Kafka
+                               User's message thread NEVER blocks on Kafka
+Circuit CLOSED again:        → probe succeeds → Kafka resumes, logs "Kafka is back up"
+```
+
+**Key design point**: The circuit breaker uses a `@Scheduled(fixedDelay = 10_000)` background thread to probe Kafka health. When the circuit is OPEN, user messages go straight to the DB with **zero delay** — no Kafka timeout is ever waited on. The probe runs independently; when it succeeds, it flips `kafkaDown` back to `false` and the next user message routes through Kafka again.
+
+**WebSocket delivery is never affected.** Messages appear on screen instantly regardless of Kafka state. Only the persistence path changes.
+
+### Batching: why messages are NOT saved one-by-one
+
+Two consumer settings force the Kafka broker to accumulate data before returning it to the consumer:
+
+| Setting | Value | Effect |
+|---|---|---|
+| `fetch.min.bytes` | 10,000 (10KB) | Broker waits until 10KB of data is ready before responding |
+| `fetch.max.wait.ms` | 5,000ms | If 10KB not reached after 5s, return whatever is available |
+
+Result: if you send 5 messages quickly, they all arrive in **one `saveAll()` call** ~5 seconds later — one DB round-trip instead of 5.
+
+### Simulate Kafka going down and coming back
+
+**Terminal 1** — watch logs live:
+```powershell
+docker compose logs -f backend
+```
+
+**Terminal 2** — run the simulation:
+
+#### Step 1: Verify normal batched flow
+
+Start the app and open **http://localhost:8080** in two browser tabs (two different users).
+
+Send 4-5 messages quickly. Wait 5 seconds. Logs show all messages saved in one batch:
+```
+INFO  Send message: sender=2 -> receiver=1, length=1
+INFO  Message published to Kafka: sender=2 -> receiver=1
+INFO  Send message: sender=2 -> receiver=1, length=1
+INFO  Message published to Kafka: sender=2 -> receiver=1
+... (4 more sends) ...
+INFO  KAFKA CONSUMER: Received batch of 4 messages from topic     ← one batch
+INFO  DATABASE SAVE: Batch persisted 4 messages to PostgreSQL
+INFO    -> Saved message: sender=2 (bbb) -> receiver=1 (aaa), contentLength=1
+INFO    -> Saved message: sender=2 (bbb) -> receiver=1 (aaa), contentLength=1
+INFO    -> Saved message: sender=2 (bbb) -> receiver=1 (aaa), contentLength=1
+INFO    -> Saved message: sender=2 (bbb) -> receiver=1 (aaa), contentLength=1
+```
+
+#### Step 2: Stop Kafka
+
+```powershell
+docker compose stop kafka
+```
+
+The 3 consumer threads immediately detect the disconnection:
+```
+INFO  FetchSessionHandler: Error sending fetch request ... to node 1:
+      org.apache.kafka.common.errors.DisconnectException: null   ← consumer lost connection
+INFO  FetchSessionHandler: Error sending fetch request ... to node 1:
+      ...                                                          ← same for all 3 threads
+```
+
+#### Step 3: Send a message while Kafka is down
+
+Send a message in the UI. It appears on screen immediately (WebSocket still works). In logs:
+
+```
+INFO  Send message: sender=2 -> receiver=1, length=5
+```
+
+The first message after Kafka stops **still waits** for `delivery.timeout.ms` (5s) because the circuit hasn't tripped yet. After 5s:
+
+```
+ERROR LoggingProducerListener: Exception thrown when sending a message ...
+      org.apache.kafka.common.errors.TimeoutException: Expiring 1 record(s) for
+      chat-messages-2:5001 ms has passed since batch creation    ← delivery timeout
+
+WARN  Kafka circuit OPEN — Kafka unreachable, switching ALL messages to direct DB write: ...
+INFO  DIRECT DB SAVE (Kafka fallback): message saved to database, sender=2 -> receiver=1
+```
+
+#### Step 4: Send more messages — instant DB save
+
+Send another message. No waiting this time — circuit is open and messages go straight to DB:
+
+```
+INFO  Send message: sender=2 -> receiver=1, length=3
+INFO  Kafka circuit OPEN — persisting directly to DB
+INFO  DIRECT DB SAVE (Kafka fallback): message saved to database, sender=2 -> receiver=1
+```
+
+Every subsequent message saves to DB immediately. Meanwhile, every 10 seconds the background probe thread tests Kafka:
+
+```
+INFO  Kafka circuit OPEN — background probe: testing Kafka connectivity...
+WARN  Kafka circuit still OPEN — probe failed: ...
+```
+
+#### Step 5: Start Kafka back up
+
+```powershell
+docker compose start kafka
+```
+
+Wait ~10s for Kafka to become healthy. You'll see the consumer threads reconnecting and rejoining the consumer group:
+```
+INFO  ConsumerCoordinator: [Consumer clientId=consumer-chatapp-persistence-1]
+      Discovered group coordinator kafka:9092 ...
+INFO  AbstractCoordinator: [Consumer clientId=consumer-chatapp-persistence-1]
+      Successfully joined group with generation Generation{generationId=2, ...}
+INFO  KafkaMessageListenerContainer: chatapp-persistence: partitions assigned: [chat-messages-0]
+INFO  KafkaMessageListenerContainer: chatapp-persistence: partitions assigned: [chat-messages-1]
+INFO  KafkaMessageListenerContainer: chatapp-persistence: partitions assigned: [chat-messages-2]
+```
+
+If there were messages published to Kafka right before it stopped (but not yet consumed), they are **still in Kafka's log** and get consumed + saved now:
+```
+INFO  KAFKA CONSUMER: Received batch of 4 messages from topic    ← the 4 pre-stop messages
+INFO  DATABASE SAVE: Batch persisted 4 messages to PostgreSQL
+```
+
+#### Step 6: Circuit auto-recovers
+
+The background probe runs every 10 seconds (`@Scheduled(fixedDelay = 10_000)`). Once Kafka is healthy, the next probe succeeds:
+```
+INFO  Kafka circuit OPEN — background probe: testing Kafka connectivity...
+INFO  Kafka circuit CLOSED — Kafka is back up, resuming normal async persistence
+```
+
+The next message you send goes through Kafka:
+```
+INFO  Message published to Kafka: sender=2 -> receiver=1
+```
+
+Normal batched Kafka flow resumes. No restart needed.
+
+#### Verify everything is in the DB
+
+```powershell
+docker compose exec postgres psql -U chatapp -d chatapp -c "
+  SELECT s.username AS sender, r.username AS receiver, m.content, m.timestamp
+  FROM messages m
+  JOIN users s ON m.sender_id = s.id
+  JOIN users r ON m.receiver_id = r.id
+  ORDER BY m.timestamp DESC LIMIT 20;"
+```
+
+All messages — both the ones saved via Kafka batch and the ones saved via direct DB fallback — should be present.
+
+### Summary table
+
+| Kafka state | First message | Subsequent messages | Circuit state |
+|---|---|---|---|
+| Up | Kafka → batch consumer → `saveAll()` | Same | CLOSED |
+| Just stopped | Waits `delivery.timeout.ms` (5s), then direct DB | Immediate direct DB | Opens on first failure |
+| Down (circuit open) | Immediate direct DB | Immediate direct DB | OPEN (background probe every 10s) |
+| Back up (probe succeeds) | Background probe closes circuit | Kafka resumes | CLOSED again |
+
+---
+
+## Kafka Configuration — Property Reference
+
+All Kafka properties are in `application.yml` under `spring.kafka`.
+
+### Producer Properties
+
+| Property | Value | Purpose |
+|---|---|---|
+| `retries` | `3` | Number of retry attempts before giving up on a send. Transient broker failures (leader election, network blip) are retried automatically. |
+| `delivery.timeout.ms` | `5000` | **Total time budget** for a send to complete, including all retries. If the message hasn't been acknowledged after 5 seconds, the `Future` throws `TimeoutException`. This is the upper bound that triggers the circuit breaker. |
+| `request.timeout.ms` | `2000` | Timeout for a **single request** to the broker. If one attempt takes >2s, it's considered failed and retried (if retries remain). Must be less than `delivery.timeout.ms`. |
+| `max.block.ms` | `3000` | Max time `kafkaTemplate.send()` blocks waiting for **metadata** (topic partition leaders). If Kafka is completely unreachable and no metadata is cached, this prevents the send call from hanging indefinitely. |
+| `reconnect.backoff.ms` | `1000` | Initial delay before reconnecting to a broker after a connection failure. Prevents aggressive reconnect loops that flood logs. |
+| `reconnect.backoff.max.ms` | `10000` | Maximum reconnect delay (exponential backoff caps here). After several failures, reconnect attempts are spaced 10 seconds apart instead of flooding every 50ms (the default). |
+
+**How they interact**: When Kafka goes down, the first send attempt blocks for up to `max.block.ms` (3s) waiting for metadata, then up to `request.timeout.ms` (2s) per retry, capped at `delivery.timeout.ms` (5s) total. After 5s the `Future` fails, the circuit opens, and all subsequent messages skip Kafka entirely.
+
+### Consumer Properties
+
+| Property | Value | Purpose |
+|---|---|---|
+| `fetch.min.bytes` | `10000` | Broker waits until **10KB** of data is available before responding to a fetch request. Forces batching — multiple messages accumulate and arrive in one `poll()` call instead of one-by-one. |
+| `fetch.max.wait.ms` | `5000` | If 10KB haven't accumulated after **5 seconds**, the broker returns whatever is available. This is the maximum delay before messages are consumed, not the typical delay (if data is already available, `poll()` returns immediately). |
+| `reconnect.backoff.ms` | `1000` | Same as producer — initial reconnect delay after broker disconnection. |
+| `reconnect.backoff.max.ms` | `10000` | Same as producer — maximum reconnect delay with exponential backoff. |
+
+**Batching behavior**: If you send 5 messages quickly, they accumulate in Kafka until `fetch.min.bytes` (10KB) is reached or `fetch.max.wait.ms` (5s) expires. Then all 5 arrive in one `poll()` → one `saveAll()` → one DB round-trip. Under heavy load (500 users), batches of 200+ messages are common.
+
+### Listener Properties (Spring Boot)
+
+| Property | Value | Purpose |
+|---|---|---|
+| `type` | `batch` | Enables `List<ChatMessageEvent>` parameter in `@KafkaListener` (instead of single records). Required for batch `saveAll()`. |
+| `concurrency` | `3` | Creates 3 consumer threads — one per Kafka partition. Each thread polls and persists independently with zero lock contention. |
+
+### Logging Suppression
+
+| Logger | Level | Why |
+|---|---|---|
+| `org.apache.kafka.clients.NetworkClient` | `ERROR` | Suppresses noisy `WARN` logs like `Connection to node -1 could not be established` and `UnknownHostException` when Kafka is stopped. These repeat every `reconnect.backoff.ms` and pollute the log. |
+| `org.apache.kafka.common.network.Selector` | `ERROR` | Suppresses low-level socket disconnect warnings during Kafka outages. |
+| `com.chatapp` | `INFO` | Keeps all application-level logs (circuit breaker state changes, DB saves, message sends) fully visible. |
+
+---
 
 ## Troubleshooting
 

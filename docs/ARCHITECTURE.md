@@ -27,7 +27,7 @@
 
 ChatApp is a WhatsApp-like real-time messaging application built as an iterative **performance optimization project**. The goal was to start with the simplest possible architecture, measure it under load, identify bottlenecks, and fix them one at a time with data.
 
-**Current version: V8.** Started at P95=2,086ms (V1 HTTP polling) — now at P95=26ms / 70ms at 200u / 500u (V8 Kafka async batch persistence).
+**Current version: V9.** Started at P95=2,086ms (V1 HTTP polling) — now at P95=26ms / 70ms at 200u / 500u (V8 Kafka async batch persistence). V9 adds Kafka resilience (circuit breaker with background health probe), batch tuning, and a vanilla JS frontend.
 
 **Design philosophy**: Start simple, measure everything, optimize with data.
 
@@ -1278,34 +1278,65 @@ A single statement with 50 `(?,?,?,?,?)` placeholders confirms batching.
 | 5    | Composite DB index on messages                | **DONE V6** | P95 504ms @ 200u / 499ms @ 500u; read queries use pre-ordered index scans     |
 | 6    | WebSockets / SSE for messaging                | **DONE V7** | send_message P95 574ms \u2192 102ms; polling eliminated; overall P95 ~105ms        |
 | 7    | Kafka async batch persistence                 | **DONE V8** | DB INSERT removed from hot path; batch writes via saveAll()                   |
-| 8    | Kafka resilience — direct DB fallback          | **DONE V9** | If Kafka is down, messages persist directly to DB; zero message loss          |
+| 8    | Kafka resilience — circuit breaker with background probe | **DONE V9** | If Kafka is down, messages persist directly to DB; zero message loss; background health probe every 10s |
 | 9    | Frontend migrated to vanilla JS (no React)     | **DONE V9** | Removed React/Babel CDN deps; pure DOM rendering; smaller page load           |
-| 10   | DB save logging                                | **DONE V9** | `log.info` on every batch save (Kafka consumer) and fallback save             |
+| 10   | DB save logging + consumer batch tuning        | **DONE V9** | `log.info` on every batch save; `fetch.min.bytes=10KB` for forced batching    |
 | 11   | Horizontal scaling (2+ instances)             | Planned     | Linear throughput increase                                                    |
 | 9    | Read replicas for PostgreSQL                  | Future      | Separate read/write workloads                                                 |
 
-**Current baseline (V8)**: send_message P95 **26ms @ 200u / 70ms @ 500u** — 78% / 29% lower than V7 Run 2 (116ms / 99ms). DB INSERT fully removed from the hot path. Zero errors at both scales.
+**Current baseline (V9)**: send_message P95 **26ms @ 200u / 70ms @ 500u**. DB INSERT fully removed from the hot path. Circuit breaker ensures zero message loss when Kafka is down. Background probe auto-recovers within 10 seconds of Kafka coming back.
 **Next target**: Horizontal scaling (multiple backend instances) — Stateless JWT is already in place; adding a load balancer + second instance + Redis pub/sub for WS routing is the natural next step.
 
 ---
 
-## V9 Changes — Kafka Resilience, Vanilla JS Frontend, DB Logging
+## V9 Changes — Kafka Circuit Breaker, Batch Tuning, Vanilla JS Frontend, DB Logging
 
-### Kafka Resilience: Direct DB Fallback
+### Kafka Resilience: Circuit Breaker with Background Health Probe
 
 **Problem**: If Kafka goes down, `kafkaTemplate.send()` would fail and messages would be lost — the WS push already went out, but no persistence happens.
 
-**Solution**: `MessageService.sendMessage()` now wraps the Kafka publish in a try/catch. If the `CompletableFuture` from `kafkaTemplate.send().get()` throws (Kafka unreachable, timeout, etc.), the message is **persisted directly to PostgreSQL** via `messageRepository.save()` as a synchronous fallback.
+**Solution**: `MessageService` implements a circuit breaker pattern using `AtomicBoolean kafkaDown`:
+
+1. **Circuit CLOSED (normal)**: Messages are published to Kafka via `kafkaTemplate.send().get()`. If the send fails (timeout, broker unreachable), the circuit opens and the message is saved directly to DB.
+2. **Circuit OPEN (Kafka down)**: All messages bypass Kafka entirely and are saved directly to PostgreSQL via `messageRepository.save()`. **Zero delay** — no Kafka timeout is ever waited on.
+3. **Background probe**: A `@Scheduled(fixedDelay = 10_000)` method runs every 10 seconds on Spring’s scheduling thread. When the circuit is OPEN, it sends a health-check message (`__probe__`) to Kafka. If the send succeeds, the circuit closes and normal Kafka flow resumes.
 
 ```java
-try {
-    kafkaTemplate.send("chat-messages", sender.getId().toString(), event).get();
-    log.info("Message published to Kafka");
-} catch (Exception ex) {
-    log.warn("Kafka unavailable, falling back to direct DB write: {}", ex.getMessage());
-    persistDirectly(sender, receiver, request.content());
+// Circuit breaker state
+private final AtomicBoolean kafkaDown = new AtomicBoolean(false);
+
+public MessageResponse sendMessage(User sender, MessageRequest request) {
+    // ... WS push first (always instant) ...
+    
+    if (kafkaDown.get()) {
+        // Circuit OPEN — skip Kafka, save to DB instantly
+        persistDirectly(sender, receiver, event.content());
+    } else {
+        try {
+            kafkaTemplate.send("chat-messages", key, event).get();
+        } catch (Exception ex) {
+            kafkaDown.set(true);
+            persistDirectly(sender, receiver, event.content());
+        }
+    }
+}
+
+@Scheduled(fixedDelay = 10_000)
+public void probeKafkaHealth() {
+    if (!kafkaDown.get()) return;
+    try {
+        kafkaTemplate.send("chat-messages", "__probe__", probeEvent).get();
+        kafkaDown.set(false); // circuit CLOSED
+    } catch (Exception ex) {
+        // still down, try again in 10s
+    }
 }
 ```
+
+**Key design decision**: The probe runs on a **background thread** (`@Scheduled`), never on the user’s message-sending thread. This means:
+- When Kafka is down, user messages are saved to DB in <5ms (no Kafka timeout waited)
+- The probe’s `kafkaTemplate.send().get()` may block for up to `delivery.timeout.ms` (5s), but only on the scheduling thread
+- `MessagePersistenceConsumer` filters out `__probe__` messages so they don’t pollute the database
 
 **Kafka producer timeouts** (configured in `application.yml`):
 - `delivery.timeout.ms: 5000` — total time allowed for send (including retries)
@@ -1313,14 +1344,22 @@ try {
 - `max.block.ms: 3000` — max time `send()` blocks waiting for metadata
 - `retries: 3` — retry on transient failures before giving up
 
-These ensure the fallback triggers within ~5 seconds max, rather than hanging indefinitely.
+**Consumer batch tuning** (configured in `application.yml`):
+- `fetch.min.bytes: 10000` — broker waits for 10KB of data before responding
+- `fetch.max.wait.ms: 5000` — maximum wait if 10KB not reached
+- Combined effect: multiple messages arrive in one `poll()` → one `saveAll()` → one DB round-trip
+
+**Logging suppression** (prevents log noise when Kafka is down):
+- `org.apache.kafka.clients.NetworkClient: ERROR` — suppresses `UnknownHostException` / reconnect warnings
+- `org.apache.kafka.common.network.Selector: ERROR` — suppresses socket disconnect warnings
 
 **Behavior**:
 | Kafka status | What happens |
 |---|---|
 | Kafka up | Normal path: Kafka publish → async batch consumer → `saveAll()` to DB |
-| Kafka down | Fallback: direct `messageRepository.save()` → immediate DB write |
-| Kafka comes back | Next message automatically routes through Kafka again (no restart needed) |
+| Kafka down (first message) | Waits `delivery.timeout.ms` (5s), then direct DB → circuit opens |
+| Kafka down (subsequent) | Immediate direct DB save (<5ms) — no Kafka interaction at all |
+| Kafka back up | Background probe succeeds → circuit closes → Kafka resumes |
 
 ### Steps to Simulate Kafka Failure
 
@@ -1334,17 +1373,21 @@ docker compose up -d --build
 docker compose stop kafka
 
 # 4. Send messages in the UI — they should still deliver via WebSocket
-#    Backend logs will show: "Kafka unavailable, falling back to direct DB write"
+#    First message waits ~5s (delivery.timeout.ms) then circuit opens
+#    All subsequent messages save to DB instantly (circuit is OPEN)
 docker compose logs -f backend | Select-String "Kafka|DIRECT DB"
 
-# 5. Verify messages are in the database
+# 5. Background probe runs every 10s — logs "probe failed" while Kafka is down
+
+# 6. Verify messages are in the database
 docker compose exec postgres psql -U chatapp -d chatapp -c "SELECT COUNT(*) FROM messages;"
 
-# 6. Bring Kafka back
+# 7. Bring Kafka back
 docker compose start kafka
 
-# 7. Send new messages — they should go through Kafka again
-#    Backend logs will show: "Message published to Kafka"
+# 8. Within 10s, background probe succeeds — circuit closes
+#    New messages go through Kafka again
+docker compose logs -f backend | Select-String "circuit CLOSED"
 ```
 
 ### DB Save Logging
@@ -1378,4 +1421,4 @@ All database persistence paths now emit `log.info` statements:
 
 ---
 
-*Last updated: April 8, 2026. Tests run on Docker Desktop; production numbers will differ.*
+*Last updated: April 8, 2026 (V9 — circuit breaker, batch tuning, vanilla JS). Tests run on Docker Desktop; production numbers will differ.*

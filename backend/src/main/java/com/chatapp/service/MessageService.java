@@ -9,11 +9,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.data.domain.PageRequest;
 
 @Slf4j
@@ -25,6 +27,12 @@ public class MessageService {
     private final UserRepository userRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final KafkaTemplate<String, ChatMessageEvent> kafkaTemplate;
+
+    // ── Circuit breaker state ──
+    // Once Kafka fails, kafkaDown flips to true. All user messages go straight to DB.
+    // A background @Scheduled probe tests Kafka every 10s. On success, circuit closes.
+    // The user's message-sending thread is NEVER blocked by Kafka timeouts.
+    private final AtomicBoolean kafkaDown = new AtomicBoolean(false);
 
     public MessageResponse sendMessage(User sender, MessageRequest request) {
         log.info("Send message: sender={} -> receiver={}, length={}", sender.getId(), request.receiverId(), request.content().length());
@@ -53,21 +61,53 @@ public class MessageService {
         messagingTemplate.convertAndSendToUser(sender.getUsername(), "/queue/messages", response);
         messagingTemplate.convertAndSendToUser(receiver.getUsername(), "/queue/messages", response);
 
-        // Publish to Kafka for async DB persistence, with direct-DB fallback
+        // Persist: Kafka if healthy, direct DB if circuit is open
         ChatMessageEvent event = new ChatMessageEvent(
                 sender.getId(), sender.getUsername(),
                 receiver.getId(), receiver.getUsername(),
                 request.content()
         );
-        try {
-            kafkaTemplate.send("chat-messages", sender.getId().toString(), event).get();
-            log.info("Message published to Kafka: sender={} -> receiver={}", sender.getId(), receiver.getId());
-        } catch (Exception ex) {
-            log.warn("Kafka unavailable, falling back to direct DB write: {}", ex.getMessage());
-            persistDirectly(sender, receiver, request.content());
+
+        if (kafkaDown.get()) {
+            // Circuit OPEN — skip Kafka entirely, save to DB instantly
+            persistDirectly(sender, receiver, event.content());
+        } else {
+            // Circuit CLOSED — try Kafka
+            try {
+                kafkaTemplate.send("chat-messages", sender.getId().toString(), event).get();
+                log.info("Message published to Kafka: sender={} -> receiver={}", sender.getId(), receiver.getId());
+            } catch (Exception ex) {
+                kafkaDown.set(true);
+                log.warn("Kafka circuit OPEN — Kafka unreachable, all messages now go to direct DB: {}", ex.getMessage());
+                persistDirectly(sender, receiver, event.content());
+            }
         }
 
         return response;
+    }
+
+    /**
+     * Background probe: runs every 10 seconds. When the circuit is OPEN, sends a tiny
+     * test message to Kafka to check if the broker has recovered. If it succeeds, closes
+     * the circuit so normal Kafka flow resumes.
+     *
+     * This runs on Spring's scheduling thread — never on the user's message thread.
+     * The user never waits for Kafka timeouts when the circuit is open.
+     */
+    @Scheduled(fixedDelay = 10_000)
+    public void probeKafkaHealth() {
+        if (!kafkaDown.get()) return; // circuit already closed, nothing to do
+
+        log.info("Kafka circuit OPEN — background probe: testing Kafka connectivity...");
+        try {
+            // Send a health-check record. If the broker is up, this succeeds within delivery.timeout.ms.
+            kafkaTemplate.send("chat-messages", "__probe__",
+                    new ChatMessageEvent(0L, "__probe__", 0L, "__probe__", "__health_check__")).get();
+            kafkaDown.set(false);
+            log.info("Kafka circuit CLOSED — Kafka is back up, resuming normal async persistence");
+        } catch (Exception ex) {
+            log.warn("Kafka circuit still OPEN — probe failed: {}", ex.getMessage());
+        }
     }
 
     /**

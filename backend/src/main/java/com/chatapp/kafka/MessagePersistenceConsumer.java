@@ -22,9 +22,19 @@ public class MessagePersistenceConsumer {
 
     @KafkaListener(topics = "chat-messages")
     public void persistMessages(List<ChatMessageEvent> events) {
-        log.info("KAFKA CONSUMER: Received batch of {} messages from topic", events.size());
+        // Filter out health-check probe messages sent by the circuit breaker
+        List<ChatMessageEvent> realEvents = events.stream()
+                .filter(e -> !"__probe__".equals(e.senderUsername()))
+                .toList();
 
-        List<Message> messages = events.stream().map(event -> {
+        if (realEvents.isEmpty()) {
+            log.debug("Kafka batch contained only probe messages, skipping DB write");
+            return;
+        }
+
+        log.info("KAFKA CONSUMER: Received batch of {} messages from topic", realEvents.size());
+
+        List<Message> messages = realEvents.stream().map(event -> {
             User sender = userRepository.getReferenceById(event.senderId());
             User receiver = userRepository.getReferenceById(event.receiverId());
             return Message.builder()
@@ -37,7 +47,7 @@ public class MessagePersistenceConsumer {
         messageRepository.saveAll(messages);
 
         log.info("DATABASE SAVE: Batch persisted {} messages to PostgreSQL", messages.size());
-        events.forEach(event ->
+        realEvents.forEach(event ->
             log.info("  -> Saved message: sender={} ({}) -> receiver={} ({}), contentLength={}",
                 event.senderId(), event.senderUsername(),
                 event.receiverId(), event.receiverUsername(),

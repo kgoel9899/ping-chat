@@ -3,7 +3,6 @@ package com.chatapp.controller;
 import com.chatapp.dto.*;
 import com.chatapp.model.User;
 import com.chatapp.service.MessageService;
-import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.handler.annotation.MessageMapping;
@@ -13,7 +12,6 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/messages")
@@ -22,26 +20,19 @@ public class MessageController {
 
     private final MessageService messageService;
 
-    @PostMapping
-    public ResponseEntity<MessageResponse> sendMessage(
-            @AuthenticationPrincipal User sender,
-            @Valid @RequestBody MessageRequest request) {
-        return ResponseEntity.ok(messageService.sendMessage(sender, request));
-    }
-
     @GetMapping("/conversation/{userId}")
-    public ResponseEntity<List<MessageResponse>> getConversation(
+    public ResponseEntity<CursorPageResponse<MessageResponse>> getConversation(
             @AuthenticationPrincipal User currentUser,
             @PathVariable Long userId,
-            @RequestParam(defaultValue = "0") int page) {
-        return ResponseEntity.ok(messageService.getConversation(currentUser.getId(), userId, page));
+            @RequestParam(required = false) Long cursor) {
+        return ResponseEntity.ok(messageService.getConversation(currentUser.getId(), userId, cursor));
     }
 
     @GetMapping("/conversations")
-    public ResponseEntity<List<UserResponse>> getConversations(
+    public ResponseEntity<CursorPageResponse<UserResponse>> getConversations(
             @AuthenticationPrincipal User currentUser,
-            @RequestParam(defaultValue = "0") int page) {
-        return ResponseEntity.ok(messageService.getConversations(currentUser.getId(), page));
+            @RequestParam(required = false) String cursor) {
+        return ResponseEntity.ok(messageService.getConversations(currentUser.getId(), cursor));
     }
 
     // ── WebSocket STOMP endpoint ──

@@ -61,16 +61,18 @@ public class ImageService {
 
         // Generate presigned PUT URL for upload
         PutObjectRequest putRequest = PutObjectRequest.builder()
-                .bucket(bucket)
-                .key(imageKey)
-                .contentType(request.contentType())
+                .bucket(bucket)                     // which bucket
+                .key(imageKey)                      // where in the bucket
+                .contentType(request.contentType()) // S3 enforces this content type on upload
                 .build();
 
+        // Wrap it in a presign request with expiry
         PutObjectPresignRequest presignPutRequest = PutObjectPresignRequest.builder()
                 .signatureDuration(Duration.ofMinutes(uploadExpirationMinutes))
                 .putObjectRequest(putRequest)
                 .build();
 
+        // Ask S3Presigner to sign it → get the URL
         String uploadUrl = s3Presigner.presignPutObject(presignPutRequest).url().toString();
 
         // Generate presigned GET URL for download (used when displaying the image)
@@ -92,7 +94,7 @@ public class ImageService {
         GetObjectRequest getRequest = GetObjectRequest.builder()
                 .bucket(bucket)
                 .key(imageKey)
-                .responseCacheControl("public, max-age=" + (downloadExpirationMinutes * 60) + ", immutable")
+                .responseCacheControl("public, max-age=" + (downloadExpirationMinutes * 60) + ", immutable") // tells browser to cache for 7 days
                 .build();
 
         GetObjectPresignRequest presignGetRequest = GetObjectPresignRequest.builder()

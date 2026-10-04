@@ -8,6 +8,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.Map;
 
+// @RestControllerAdvice is a Spring annotation that makes a class a global exception handler
+// it intercepts exceptions thrown by any controller across the entire application.
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -18,6 +20,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
     }
 
+    // Triggers when a controller method has @Valid on a parameter
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, String>> handleValidation(MethodArgumentNotValidException ex) {
         String message = ex.getBindingResult().getFieldErrors().stream()

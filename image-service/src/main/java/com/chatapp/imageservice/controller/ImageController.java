@@ -20,6 +20,11 @@ public class ImageController {
 
     private final ImageService imageService;
 
+    // In Spring Security, when a request comes in with a JWT token, Spring:
+    // - Intercepts the request
+    // - Validates the JWT
+    // - Extracts the username from it
+    // - Creates a Principal object and attaches it to the request (injects it into controller methods)
     @PostMapping("/presign/upload")
     public ResponseEntity<PresignedUploadResponse> getUploadUrl(
             Principal principal,

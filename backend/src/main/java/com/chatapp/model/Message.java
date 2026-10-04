@@ -16,10 +16,16 @@ public class Message {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /* fetch = FetchType.LAZY — don't load the User object from DB immediately when you load a Message.
+    Only load it when you actually call message.getSender(). Without this (EAGER),
+    every message load would also trigger a DB query for both sender and receiver — unnecessary overhead.
+    Actual column name is sender_id.
+    One user can appear as sender in many messages → @ManyToOne on Message */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "sender_id", nullable = false)
     private User sender;
 
+    // One user can appear as receiver in many messages → @ManyToOne on Message
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "receiver_id", nullable = false)
     private User receiver;
@@ -36,12 +42,8 @@ public class Message {
     @Column(name = "timestamp")
     private LocalDateTime timestamp;
 
-    @Column(name = "is_read")
-    private boolean read;
-
     @PrePersist
     protected void onCreate() {
         timestamp = LocalDateTime.now();
-        read = false;
     }
 }

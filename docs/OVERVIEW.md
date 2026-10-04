@@ -22,7 +22,7 @@ Each version fixed one specific bottleneck. Load tests before and after validate
 | V2 | HikariCP pool 10 → 50 | Freed DB connections; exposed BCrypt CPU bottleneck |
 | V3 | Fixed load test (login once, not per request) | True P95 = 586ms @ 200 users |
 | V4 | `@Cacheable` on user lookup | Removed a DB hit on every authenticated request |
-| V5 | Pagination (LIMIT 15) + infinite scroll | P95 stable across 200u and 500u |
+| V5 | Cursor-based pagination (replace offset) + infinite scroll | No N+1 growth; stable latency across conversation depth |
 | V6 | Composite DB indexes | Ordered scans without post-sort step |
 | V7 | WebSocket (STOMP) — replaced HTTP polling | P95 = 105ms @ 200u (5.6× faster than V6) |
 | V8 | Kafka async batch persistence | P95 = 26ms @ 200u — DB write removed from hot path |
@@ -66,15 +66,19 @@ No Redis, no extra dependency — just Spring's built-in cache abstraction.
 
 ---
 
-## 6. Pagination + Infinite Scroll (V5+V6)
+## 5. Cursor-Based Pagination (V5+V6)
 
-Without pagination, `GET /api/messages/conversation/{id}` returned **all** messages between two users. Early in a load test that's 5 rows; 2 minutes in with 200 users, it's hundreds of rows per request. Latency grew 49× over the course of a test.
+Without pagination, `GET /api/messages/conversation/{id}` returned **all** messages between two users. Early in a load test that's 5 rows; 2 minutes in with 200 users, it's hundreds of rows per request.
 
-**Fix (V5)**: Both message and conversation queries now use `PageRequest.of(page, 15)` — 15 rows max. The frontend uses infinite scroll:
-- Scroll up in chat → loads older messages (page 1, 2, …)
-- Scroll down in the sidebar → loads more conversations (page 1, 2, …)
+**Offset pagination (discarded)**: `PageRequest.of(page, 15)` uses SQL `OFFSET page*15 LIMIT 15`. On page 10 the DB has to skip 150 rows before returning 15 — cost grows with depth. Also drifts: if a new message is inserted between page 1 and page 2, the user gets a duplicate row.
 
-**Fix (V6)**: Composite DB indexes `(sender_id, timestamp DESC)` and `(receiver_id, timestamp DESC)`. PostgreSQL can now walk a pre-ordered index to satisfy the `ORDER BY timestamp DESC LIMIT 15` instead of scanning all rows and sorting. Queries use a `BitmapOr` of the two indexes.
+**Cursor-based pagination (current)**: The API accepts an opaque `cursor` parameter.
+- **Messages**: cursor = ID of the oldest message already loaded. Query: `WHERE id < :cursor ORDER BY id DESC LIMIT 15`. IDs are monotonically increasing (IDENTITY), so `id < cursor` always means "older than".
+- **Conversations**: cursor = `last_message_at` timestamp of the last partner in the previous page. Query: `WHERE last_message_at < :cursor ORDER BY last_message_at DESC LIMIT 15`.
+
+Both endpoints return `{ items: [...], nextCursor: "..." }`. When `nextCursor` is `null` there are no more pages. The frontend stores the cursor and sends it on scroll; it never tracks a page number.
+
+**Fix (V6)**: Composite DB indexes `(sender_id, timestamp DESC)` and `(receiver_id, timestamp DESC)`. PostgreSQL walks a pre-ordered index to satisfy `ORDER BY id DESC LIMIT 15` without scanning all rows.
 
 ---
 
@@ -82,7 +86,7 @@ Without pagination, `GET /api/messages/conversation/{id}` returned **all** messa
 
 Before V8, every `sendMessage()` call did a synchronous `messageRepository.save()` — the WebSocket response couldn't go out until the DB INSERT finished. At 200 users that was the dominant latency source.
 
-**Fix**: The DB write was moved off the hot path entirely using Kafka.
+**Fix**: The DB write was moved off the hot path entirely using Kafka. Every message send publishes a `ChatMessageEvent` to the `chat-messages` topic. `MessagePersistenceConsumer` (3 threads, one per Kafka partition) reads batches and calls `messageRepository.saveAll()`. It also **upserts the `conversations` table** in the same batch step — see section 15.
 
 **Send path (V8+)**:
 ```
@@ -243,6 +247,31 @@ Users can send images in chat. The flow uses **presigned S3 URLs** so image data
 - Public routes: `/`, `/index.html`, `/css/**`, `/js/**`, `/api/auth/**`
 - XSS: all user content rendered via `escapeHtml()` (text node extraction), never via `innerHTML` with raw input
 - SQL injection: all queries use Spring Data JPA with parameterized `@Query` — no string concatenation
+
+---
+
+## 15. Conversations Table
+
+The sidebar needs a list of recent conversation partners, ordered by last message time. The naive approach runs a `GROUP BY + MAX(timestamp)` aggregation over the entire `messages` table on every sidebar load — cost grows linearly with message count.
+
+**Fix**: A dedicated `conversations` table with one row per unique user pair:
+
+| Column | Type | Notes |
+|---|---|---|
+| user1_id | BIGINT | `MIN(senderId, receiverId)` — always the smaller ID |
+| user2_id | BIGINT | `MAX(senderId, receiverId)` — always the larger ID |
+| last_message_at | TIMESTAMP | Updated on every new message |
+
+Primary key is `(user1_id, user2_id)`. Storing min/max guarantees exactly one row per pair regardless of who initiates. Indexes on `(user1_id, last_message_at DESC)` and `(user2_id, last_message_at DESC)` make the sidebar query a fast index seek instead of a full table scan.
+
+**Write path**: `MessagePersistenceConsumer` and `persistDirectly()` both run an upsert after saving messages:
+```sql
+INSERT INTO conversations (user1_id, user2_id, last_message_at)
+VALUES (?, ?, ?)
+ON CONFLICT (user1_id, user2_id) DO UPDATE SET last_message_at = EXCLUDED.last_message_at
+```
+
+**Read path**: sidebar query becomes a simple indexed scan with no aggregation.
 
 ---
 

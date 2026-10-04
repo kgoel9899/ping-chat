@@ -8,10 +8,10 @@ var chatState = {
   messages: [],
   searchQuery: '',
   searchResults: [],
-  msgPage: 0,
-  convPage: 0,
   hasMoreMsgs: true,
   hasMoreConvs: true,
+  msgCursor: null,
+  convCursor: null,
   loadingMsgs: false,
   loadingConvs: false,
   shouldAutoScroll: true,
@@ -212,7 +212,7 @@ function renderChatArea() {
   msgContainer.addEventListener('scroll', function () {
     chatState.shouldAutoScroll = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 50;
     if (msgContainer.scrollTop === 0 && chatState.hasMoreMsgs && !chatState.loadingMsgs) {
-      loadMessages(chatState.msgPage + 1);
+      loadMessages(chatState.msgCursor);
     }
   });
 
@@ -257,23 +257,22 @@ function renderChatArea() {
 
 // ─── Data operations ───
 
-async function loadConversations(page) {
-  if (page === undefined) page = 0;
+async function loadConversations(cursor) {
   if (chatState.loadingConvs) return;
   chatState.loadingConvs = true;
   try {
-    var data = await api.getConversations(page);
-    if (page === 0) {
-      chatState.conversations = data;
+    var data = await api.getConversations(cursor);
+    if (!cursor) {
+      chatState.conversations = data.items;
     } else {
       var ids = {};
       chatState.conversations.forEach(function (c) { ids[c.id] = true; });
-      data.forEach(function (c) {
+      data.items.forEach(function (c) {
         if (!ids[c.id]) chatState.conversations.push(c);
       });
     }
-    chatState.hasMoreConvs = data.length === 15;
-    chatState.convPage = page;
+    chatState.convCursor = data.nextCursor;
+    chatState.hasMoreConvs = !!data.nextCursor;
   } catch (err) {
     console.error('[Chat] Failed to load conversations', err);
   } finally {
@@ -282,28 +281,27 @@ async function loadConversations(page) {
   }
 }
 
-async function loadMessages(page) {
-  if (page === undefined) page = 0;
+async function loadMessages(cursorId) {
   if (!chatState.selectedUser || chatState.loadingMsgs) return;
   chatState.loadingMsgs = true;
   renderMessages();
   try {
-    var data = await api.getConversation(chatState.selectedUser.id, page);
-    if (page === 0) {
-      chatState.messages = data;
-      chatState.msgPage = 0;
-      chatState.hasMoreMsgs = data.length === 15;
+    var data = await api.getConversation(chatState.selectedUser.id, cursorId);
+    if (!cursorId) {
+      // Initial load — no cursor means get newest messages
+      chatState.messages = data.items;
+      chatState.msgCursor = data.nextCursor;
+      chatState.hasMoreMsgs = !!data.nextCursor;
     } else {
       // Prepend older messages, preserve scroll position
       var container = document.getElementById('messages-container');
       var prevHeight = container ? container.scrollHeight : 0;
       var existingIds = {};
       chatState.messages.forEach(function (m) { existingIds[m.id] = true; });
-      var older = data.filter(function (m) { return !existingIds[m.id]; });
+      var older = data.items.filter(function (m) { return !existingIds[m.id]; });
       chatState.messages = older.concat(chatState.messages);
-      chatState.msgPage = page;
-      chatState.hasMoreMsgs = data.length === 15;
-      // Render then restore scroll position
+      chatState.msgCursor = data.nextCursor;
+      chatState.hasMoreMsgs = !!data.nextCursor;
       chatState.loadingMsgs = false;
       renderMessages();
       requestAnimationFrame(function () {
@@ -326,14 +324,14 @@ function selectUser(u) {
   chatState.searchQuery = '';
   chatState.searchResults = [];
   chatState.messages = [];
-  chatState.msgPage = 0;
+  chatState.msgCursor = null;
   chatState.hasMoreMsgs = true;
   chatState.shouldAutoScroll = true;
   var searchInput = document.getElementById('search-input');
   if (searchInput) searchInput.value = '';
   renderConversationList();
   renderChatArea();
-  loadMessages(0);
+  loadMessages();
 }
 
 async function handleSearch(query) {
@@ -362,8 +360,8 @@ function renderChatPage(root, user, onLogout) {
   chatState.messages = [];
   chatState.searchQuery = '';
   chatState.searchResults = [];
-  chatState.msgPage = 0;
-  chatState.convPage = 0;
+  chatState.msgCursor = null;
+  chatState.convCursor = null;
   chatState.hasMoreMsgs = true;
   chatState.hasMoreConvs = true;
 
@@ -394,7 +392,7 @@ function renderChatPage(root, user, onLogout) {
   document.getElementById('conversation-list').addEventListener('scroll', function (e) {
     var el = e.target;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 50 && chatState.hasMoreConvs && !chatState.loadingConvs) {
-      loadConversations(chatState.convPage + 1);
+      loadConversations(chatState.convCursor);
     }
   });
 
@@ -431,5 +429,5 @@ function renderChatPage(root, user, onLogout) {
   ws.connect(api.getToken());
 
   // Load initial conversations
-  loadConversations(0);
+  loadConversations();
 }

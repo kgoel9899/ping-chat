@@ -58,13 +58,15 @@ const api = {
   },
 
   // Messages (HTTP — used for initial history load + pagination)
-  getConversation(userId, page) {
-    if (page === undefined) page = 0;
-    return this.request('GET', '/api/messages/conversation/' + userId + '?page=' + page);
+  getConversation(userId, cursor) {
+    var url = '/api/messages/conversation/' + userId;
+    if (cursor) url += '?cursor=' + cursor;
+    return this.request('GET', url);
   },
-  getConversations(page) {
-    if (page === undefined) page = 0;
-    return this.request('GET', '/api/messages/conversations?page=' + page);
+  getConversations(cursor) {
+    var url = '/api/messages/conversations';
+    if (cursor) url += '?cursor=' + encodeURIComponent(cursor);
+    return this.request('GET', url);
   },
 
   // Users

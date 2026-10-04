@@ -14,6 +14,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.List;
 
+// This is the JWT authentication filter that runs on every request - exactly once per request
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -34,6 +35,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 String username = jwtUtil.extractUsername(token);
                 var auth = new UsernamePasswordAuthenticationToken(username, null, List.of());
                 SecurityContextHolder.getContext().setAuthentication(auth);
+                // Stores it in SecurityContextHolder — this is how Spring knows the user is authenticated for the rest of the request lifecycle
                 log.debug("JWT authenticated: user={}", username);
             } else {
                 log.warn("Invalid JWT token on {} {}", request.getMethod(), request.getRequestURI());

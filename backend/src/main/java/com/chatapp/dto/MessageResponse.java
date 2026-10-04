@@ -10,7 +10,6 @@ public record MessageResponse(
     String receiverUsername,
     String content,
     LocalDateTime timestamp,
-    boolean read,
     String clientId,   // echoed back from MessageRequest for client-side dedup
     String imageUrl,   // presigned S3 download URL (null for text-only messages)
     String imageKey    // S3 object key for URL refresh (null for text-only messages)

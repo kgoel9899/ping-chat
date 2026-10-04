@@ -18,7 +18,7 @@ public class UserController {
     @GetMapping("/search")
     public ResponseEntity<List<UserResponse>> searchUsers(@RequestParam String q) {
         return ResponseEntity.ok(
-            userRepository.findByUsernameContainingIgnoreCase(q)
+            userRepository.findByUsernameStartsWithIgnoreCase(q)
                 .stream()
                 .map(u -> new UserResponse(u.getId(), u.getUsername()))
                 .toList()

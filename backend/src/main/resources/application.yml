@@ -13,34 +13,40 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         jdbc:
-          batch_size: 50
+          batch_size: 50 # groups up to 50 INSERT/UPDATE statements into one DB round trip
         order_inserts: true
+        # batch_size alone just sets the max batch size. But batching only works when consecutive statements are the same type (same table, same operation).
+        # If they're interleaved, Hibernate has to flush the current batch and start a new one every time the type changes.
+        # order_inserts is what actually makes batch_size effective — without it, batching barely helps in practice.
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
+      # Serializers convert Java objects → bytes (Kafka only stores bytes). Deserializers do the reverse.
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # The value is a complex Java object (your message DTO with multiple fields). JSON serializes it into: {"field1":"value1","field2":123,...} and deserializes it back into the Java object on the consumer side.
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-      retries: 3
+      retries: 3 # If sending fails (e.g. broker temporarily unavailable), retry up to 3 times before giving up.
       properties:
-        delivery.timeout.ms: 5000
-        request.timeout.ms: 2000
-        max.block.ms: 3000
-        reconnect.backoff.ms: 1000
-        reconnect.backoff.max.ms: 10000
+        delivery.timeout.ms: 5000 # The total time budget for a message to be successfully delivered — including retries. If the message isn't confirmed delivered within 5s from the first send attempt, it fails.
+        request.timeout.ms: 2000 # How long to wait for the broker to respond to a single send request. If the broker doesn't acknowledge within 2s → that attempt is considered failed → retry kicks in.
+        max.block.ms: 3000 # How long producer.send() will block your thread if the internal send buffer is full (e.g. broker is slow and messages are piling up). After 3s of blocking → throws TimeoutException.
+        reconnect.backoff.ms: 1000 # After a connection to a broker drops, wait 1s before the first reconnect attempt (avoids hammering a down broker).
+        reconnect.backoff.max.ms: 10000 # Each reconnect failure doubles the wait (1s → 2s → 4s → 8s → 10s max). Caps the backoff at 10s.
     consumer:
       group-id: chatapp-persistence
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer # same
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer # same
       properties:
         spring.json.trusted.packages: com.chatapp.dto
-        reconnect.backoff.ms: 1000
-        reconnect.backoff.max.ms: 10000
-        fetch.min.bytes: 10000
-        fetch.max.wait.ms: 5000
-      auto-offset-reset: earliest
+        reconnect.backoff.ms: 1000 # same
+        reconnect.backoff.max.ms: 10000 # same
+        fetch.min.bytes: 10000 # Consumer tells the broker: "don't send me a response until you have at least 10KB of messages ready." Reduces network round trips by batching small messages together before fetching.
+        fetch.max.wait.ms: 5000 # But don't wait longer than 5s even if < 10KB is available. Prevents messages sitting in Kafka unprocessed when traffic is low.
+      auto-offset-reset: earliest # If this consumer group has no saved offset (first time running, or offset expired), start reading from the beginning of the topic — don't miss any messages.
     listener:
-      type: batch
-      concurrency: 3
+      type: batch # Instead of receiving one message at a time, the consumer receives a list of messages per invocation
+      concurrency: 3 # Spins up 3 parallel listener threads, each consuming independently. Each thread processes its own batch simultaneously — 3x the throughput vs a single thread.
+      # Note: concurrency only helps if you have at least 3 partitions in your Kafka topic. If you only have 1 partition, only 1 thread gets work — the other 2 sit idle
 
 jwt:
   secret: ${JWT_SECRET:my-super-secret-key-that-is-at-least-32-bytes-long-for-hs256}

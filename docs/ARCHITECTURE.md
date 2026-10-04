@@ -287,11 +287,11 @@ public void configureClientOutboundChannel(ChannelRegistration registration) {
 
 ### Initial page load (HTTP)
 
-On first opening the chat, two HTTP GET requests fetch existing data (page 0):
-- `GET /api/messages/conversations?page=0` — first 15 partners (scroll down loads page 1, 2, ...)
-- `GET /api/messages/conversation/{id}?page=0` — last 15 messages (scroll up loads page 1, 2, ...)
+On first opening the chat, two HTTP GET requests fetch existing data:
+- `GET /api/messages/conversations` — first 15 partners ordered by most recent message (no cursor = latest page)
+- `GET /api/messages/conversation/{id}` — last 15 messages (no cursor = newest)
 
-After that, all new messages arrive via WebSocket push. Older history is loaded on demand via scroll-triggered pagination.
+Scrolling up in the message view sends `?cursor=<oldestMessageId>`. Scrolling down in the sidebar sends `?cursor=<lastTimestamp>`. Both responses include `nextCursor: null` when exhausted.
 
 ---
 
@@ -346,35 +346,57 @@ backend/src/main/resources/static/
 | image_url   | TEXT                | NULLABLE (presigned S3 GET URL)|
 | image_key   | VARCHAR(255)        | NULLABLE (S3 object key)       |
 | timestamp   | TIMESTAMP           | Set by @PrePersist             |
-| is_read     | BOOLEAN             | Default false                  |
+
+### conversations table
+
+| Column          | Type                | Constraints                                    |
+|-----------------|---------------------|------------------------------------------------|
+| user1_id        | BIGINT              | PK part 1, MIN(senderId, receiverId)           |
+| user2_id        | BIGINT              | PK part 2, MAX(senderId, receiverId)           |
+| last_message_at | TIMESTAMP           | Updated on every new message via upsert        |
+
+Primary key is `(user1_id, user2_id)`. Storing min/max guarantees exactly one row per pair. Upserted by `MessagePersistenceConsumer` and `persistDirectly()` on every message.
 
 ### Indexes
 
-| Index Name           | Columns                    | Purpose                                          |
-|----------------------|----------------------------|--------------------------------------------------|
-| idx_msg_sender_ts    | sender_id, timestamp DESC  | Ordered scan for sender-side conversation queries |
-| idx_msg_receiver_ts  | receiver_id, timestamp DESC| Ordered scan for receiver-side queries           |
-
-Both paginated queries (`findConversation`, `findConversationPartnerIds`) use an `OR sender_id = :x OR receiver_id = :x` pattern. PostgreSQL resolves each branch with one of these composite indexes, merges via BitmapOr, and LIMIT is applied without a post-sort step.
+| Index Name           | Columns                    | Purpose                                           |
+|----------------------|----------------------------|---------------------------------------------------|
+| idx_msg_sender_ts    | sender_id, timestamp DESC  | Ordered scan for sender-side message queries      |
+| idx_msg_receiver_ts  | receiver_id, timestamp DESC| Ordered scan for receiver-side message queries    |
+| idx_conv_user1_ts    | user1_id, last_message_at DESC | Fast sidebar query for conversations (user1) |
+| idx_conv_user2_ts    | user2_id, last_message_at DESC | Fast sidebar query for conversations (user2) |
 
 ---
 
 ## API Endpoints
 
-| Method | Path                              | Auth | Description                        |
-|--------|-----------------------------------|------|------------------------------------|
-| POST   | /api/auth/register                | No   | Register new user                  |
-| POST   | /api/auth/login                   | No   | Login, get JWT                     |
-| POST   | /api/messages                     | Yes  | Send a message                     |
-| GET    | /api/messages/conversation/{id}   | Yes  | Get all messages with user {id}    |
-| GET    | /api/messages/conversations       | Yes  | Get list of conversation partners  |
-| GET    | /api/users/search?q=              | Yes  | Search users by username           |
-| POST   | /api/images/presign/upload        | Yes  | Get presigned S3 upload + download URLs |
-| GET    | /api/images/presign/download?imageKey= | Yes | Refresh expired download URL  |
+| Method | Path                              | Auth | Description                                              |
+|--------|-----------------------------------|------|----------------------------------------------------------|\
+| POST   | /api/auth/register                | No   | Register new user                                        |
+| POST   | /api/auth/login                   | No   | Login, get JWT                                           |
+| GET    | /api/messages/conversation/{id}   | Yes  | Cursor-paginated messages with user {id}                 |
+| GET    | /api/messages/conversations       | Yes  | Cursor-paginated conversation partners                   |
+| GET    | /api/users/search?q=              | Yes  | Search users by username prefix                          |
+| POST   | /api/images/presign/upload        | Yes  | Get presigned S3 upload + download URLs                  |
+| GET    | /api/images/presign/download?imageKey= | Yes | Refresh expired download URL                        |
 
 All authenticated endpoints require `Authorization: Bearer <jwt-token>` header.
 
 The image endpoints are served by the **image-service** microservice (port 8081), routed via nginx.
+
+### Cursor pagination response shape
+
+Both `getConversation` and `getConversations` return:
+```json
+{
+  "items": [...],
+  "nextCursor": "123"  // null when no more pages
+}
+```
+- **Messages**: `cursor` param is a message ID (`Long`). `WHERE id < :cursor ORDER BY id DESC LIMIT 15`. `nextCursor` = ID of the oldest message in the batch.
+- **Conversations**: `cursor` param is an ISO timestamp string. `WHERE last_message_at < :cursor ORDER BY last_message_at DESC LIMIT 15`. `nextCursor` = `last_message_at` of the last partner in the batch.
+
+Message sending is **WebSocket only** (`/app/chat.send`). There is no REST endpoint for sending messages.
 
 ---
 

@@ -40,8 +40,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
             if (user.isPresent()) {
                 var authToken = new UsernamePasswordAuthenticationToken(
-                        user.get(), null, Collections.emptyList());
-                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                        user.get(), null, Collections.emptyList()); // we are setting the user here, so that we can access it later with @AuthenticationPrincipal, as we need to call user functions on it.
+                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request)); // attaches client IP + session ID to the token — optional metadata, not used for auth itself
                 SecurityContextHolder.getContext().setAuthentication(authToken);
             }
         }

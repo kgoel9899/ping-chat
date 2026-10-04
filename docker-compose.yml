@@ -44,7 +44,6 @@ services:
       DB_NAME: chatapp
       DB_USER: chatapp
       DB_PASSWORD: chatapp
-      JWT_SECRET: my-super-secret-key-that-is-at-least-32-bytes-long-for-hs256
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     depends_on:
       postgres:
@@ -56,12 +55,8 @@ services:
   image-service:
     build: ./image-service
     environment:
-      JWT_SECRET: my-super-secret-key-that-is-at-least-32-bytes-long-for-hs256
-      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-chatapp-images}
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_S3_ENDPOINT: ${AWS_S3_ENDPOINT:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     restart: on-failure
 
   nginx:

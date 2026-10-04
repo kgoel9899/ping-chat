@@ -9,8 +9,6 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
-import java.net.URI;
-
 @Configuration
 public class S3Config {
 
@@ -23,35 +21,26 @@ public class S3Config {
     @Value("${aws.s3.secret-key}")
     private String secretKey;
 
-    @Value("${aws.s3.endpoint:}")
-    private String endpoint;
-
+    // S3Client = your server going to S3 itself to do something
+    // StaticCredentialsProvider means the credentials are fixed (from config), not dynamically fetched (e.g. from IAM role).
     @Bean
     public S3Client s3Client() {
-        var builder = S3Client.builder()
+        return S3Client.builder()
                 .region(Region.of(region))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(accessKey, secretKey)));
-
-        if (endpoint != null && !endpoint.isBlank()) {
-            builder.endpointOverride(URI.create(endpoint))
-                   .forcePathStyle(true); // required for LocalStack
-        }
-
-        return builder.build();
+                        AwsBasicCredentials.create(accessKey, secretKey)))
+                .build();
     }
 
+    // S3Presigner = your server giving the client a signed ticket that grants temporary access to S3
+    // Without S3Presigner, every image upload/download would have to go through your server, which would be a bottleneck.
+    // With presigned URLs, your server is only involved for a fraction of a second to generate the URL.
     @Bean
     public S3Presigner s3Presigner() {
-        var builder = S3Presigner.builder()
+        return S3Presigner.builder()
                 .region(Region.of(region))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(accessKey, secretKey)));
-
-        if (endpoint != null && !endpoint.isBlank()) {
-            builder.endpointOverride(URI.create(endpoint));
-        }
-
-        return builder.build();
+                        AwsBasicCredentials.create(accessKey, secretKey)))
+                .build();
     }
 }

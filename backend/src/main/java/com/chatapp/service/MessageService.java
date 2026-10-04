@@ -1,8 +1,10 @@
 package com.chatapp.service;
 
 import com.chatapp.dto.*;
+import com.chatapp.model.Conversation;
 import com.chatapp.model.Message;
 import com.chatapp.model.User;
+import com.chatapp.repository.ConversationRepository;
 import com.chatapp.repository.MessageRepository;
 import com.chatapp.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +26,7 @@ import org.springframework.data.domain.PageRequest;
 public class MessageService {
 
     private final MessageRepository messageRepository;
+    private final ConversationRepository conversationRepository;
     private final UserRepository userRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final KafkaTemplate<String, ChatMessageEvent> kafkaTemplate;
@@ -53,7 +56,6 @@ public class MessageService {
                 receiver.getUsername(),
                 request.content(),
                 now,
-                false,
                 request.clientId(), // echoed back so client can dedup by stable UUID
                 request.imageUrl(),
                 request.imageKey()
@@ -126,22 +128,56 @@ public class MessageService {
                 .imageKey(imageKey)
                 .build();
         messageRepository.save(message);
+
+        // Upsert conversations table
+        Long u1 = Math.min(sender.getId(), receiver.getId());
+        Long u2 = Math.max(sender.getId(), receiver.getId());
+        conversationRepository.upsert(u1, u2, LocalDateTime.now());
+
         log.info("DIRECT DB SAVE (Kafka fallback): message saved to database, sender={} -> receiver={}", sender.getId(), receiver.getId());
     }
 
-    public List<MessageResponse> getConversation(Long userId1, Long userId2, int page) {
-        List<Message> msgs = messageRepository.findConversation(userId1, userId2, PageRequest.of(page, 15));
+    public CursorPageResponse<MessageResponse> getConversation(Long userId1, Long userId2, Long cursorId) {
+        List<Message> msgs;
+        if (cursorId == null) {
+            msgs = messageRepository.findConversationLatest(userId1, userId2, PageRequest.of(0, 15));
+        } else {
+            msgs = messageRepository.findConversationBefore(userId1, userId2, cursorId, PageRequest.of(0, 15));
+        }
         Collections.reverse(msgs);
-        log.info("Get conversation: user1={}, user2={}, page={}, messages={}", userId1, userId2, page, msgs.size());
-        return msgs.stream().map(this::toResponse).toList();
+        log.info("Get conversation: user1={}, user2={}, cursorId={}, messages={}", userId1, userId2, cursorId, msgs.size());
+        List<MessageResponse> items = msgs.stream().map(this::toResponse).toList();
+        // nextCursor = oldest message ID in this batch (first after reverse = oldest)
+        String nextCursor = (!msgs.isEmpty() && msgs.size() == 15) ? String.valueOf(msgs.get(0).getId()) : null;
+        return new CursorPageResponse<>(items, nextCursor);
     }
 
-    public List<UserResponse> getConversations(Long userId, int page) {
-        List<Long> partnerIds = messageRepository.findConversationPartnerIds(userId, PageRequest.of(page, 15));
-        log.info("Get conversations: user={}, page={}, partnerIds={}", userId, page, partnerIds);
-        return userRepository.findAllById(partnerIds).stream()
+    public CursorPageResponse<UserResponse> getConversations(Long userId, String cursor) {
+        List<Conversation> convs;
+        if (cursor == null) {
+            convs = conversationRepository.findLatest(userId, PageRequest.of(0, 15));
+        } else {
+            convs = conversationRepository.findBefore(userId, LocalDateTime.parse(cursor), PageRequest.of(0, 15));
+        }
+
+        List<Long> partnerIds = convs.stream()
+                .map(c -> c.getUser1Id().equals(userId) ? c.getUser2Id() : c.getUser1Id())
+                .toList();
+        log.info("Get conversations: user={}, cursor={}, partners={}", userId, cursor, partnerIds.size());
+
+        String nextCursor = (!convs.isEmpty() && convs.size() == 15)
+                ? convs.get(convs.size() - 1).getLastMessageAt().toString()
+                : null;
+
+        // findAllById doesn't preserve order — re-sort to match conversation order
+        var userMap = userRepository.findAllById(partnerIds).stream()
+                .collect(java.util.stream.Collectors.toMap(User::getId, u -> u));
+        List<UserResponse> users = partnerIds.stream()
+                .map(userMap::get)
+                .filter(java.util.Objects::nonNull)
                 .map(u -> new UserResponse(u.getId(), u.getUsername()))
                 .toList();
+        return new CursorPageResponse<>(users, nextCursor);
     }
 
     private MessageResponse toResponse(Message message) {
@@ -153,7 +189,6 @@ public class MessageService {
                 message.getReceiver().getUsername(),
                 message.getContent(),
                 message.getTimestamp(),
-                message.isRead(),
                 null, // DB-loaded messages have no clientId
                 message.getImageUrl(),
                 message.getImageKey()

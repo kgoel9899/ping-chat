@@ -5,5 +5,7 @@ public record ChatMessageEvent(
     String senderUsername,
     Long receiverId,
     String receiverUsername,
-    String content
+    String content,
+    String imageUrl,
+    String imageKey
 ) {}

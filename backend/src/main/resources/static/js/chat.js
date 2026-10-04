@@ -21,6 +21,32 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function openImagePreview(src) {
+  var overlay = document.createElement('div');
+  overlay.className = 'image-overlay';
+  overlay.innerHTML = '<img src="' + src + '" /><button class="image-overlay-close">&times;</button>';
+  overlay.addEventListener('click', function (e) {
+    if (e.target === overlay || e.target.classList.contains('image-overlay-close')) {
+      overlay.remove();
+    }
+  });
+  document.body.appendChild(overlay);
+}
+
+function refreshExpiredImage(img) {
+  var imageKey = img.getAttribute('data-image-key');
+  if (!imageKey || img.dataset.refreshed) return; // prevent infinite retry
+  img.dataset.refreshed = 'true';
+  console.log('[IMG] Presigned URL expired, refreshing:', imageKey);
+  api.refreshImageDownloadUrl(imageKey).then(function (res) {
+    img.src = res.downloadUrl;
+    delete img.dataset.refreshed; // allow future refreshes
+    console.log('[IMG] Refreshed URL for:', imageKey);
+  }).catch(function (err) {
+    console.error('[IMG] Failed to refresh URL:', imageKey, err);
+  });
+}
+
 // ─── Render helpers ───
 
 function renderConversationList() {
@@ -89,8 +115,16 @@ function renderMessages() {
 
   html += chatState.messages.map(function (msg) {
     var cls = msg.senderId === chatState.user.id ? 'sent' : 'received';
+    var imageHtml = '';
+    if (msg.imageUrl) {
+      imageHtml = '<div class="message-image"><img src="' + escapeHtml(msg.imageUrl) + '" alt="image" loading="lazy" onclick="openImagePreview(this.src)"' +
+        (msg.imageKey ? ' data-image-key="' + escapeHtml(msg.imageKey) + '" onerror="refreshExpiredImage(this)"' : '') +
+        ' /></div>';
+    }
+    var contentHtml = msg.content && msg.content !== '[image]' ? '<div>' + escapeHtml(msg.content) + '</div>' : '';
     return '<div class="message ' + cls + '">' +
-      '<div>' + escapeHtml(msg.content) + '</div>' +
+      imageHtml +
+      contentHtml +
       '<div class="time">' + formatTime(msg.timestamp) + '</div>' +
     '</div>';
   }).join('');
@@ -119,12 +153,59 @@ function renderChatArea() {
       '<h3>' + escapeHtml(chatState.selectedUser.username) + '</h3>' +
     '</div>' +
     '<div class="messages" id="messages-container"></div>' +
+    '<div id="image-preview-bar" class="image-preview-bar" style="display:none">' +
+      '<img id="image-preview-thumb" />' +
+      '<span id="image-preview-name"></span>' +
+      '<button id="image-preview-cancel" title="Cancel">&times;</button>' +
+    '</div>' +
     '<form class="message-input" id="send-form">' +
+      '<input type="file" id="image-input" accept="image/jpeg,image/png,image/gif,image/webp" style="display:none" />' +
+      '<button type="button" id="image-btn" class="image-btn" title="Send image">&#128247;</button>' +
       '<input type="text" id="msg-input" placeholder="Type a message..." />' +
       '<button type="submit">Send</button>' +
     '</form>';
 
   renderMessages();
+
+  // Image file picker
+  var imageInput = document.getElementById('image-input');
+  var imageBtn = document.getElementById('image-btn');
+  var previewBar = document.getElementById('image-preview-bar');
+  var previewThumb = document.getElementById('image-preview-thumb');
+  var previewName = document.getElementById('image-preview-name');
+  var previewCancel = document.getElementById('image-preview-cancel');
+
+  chatState.pendingImage = null;
+
+  imageBtn.addEventListener('click', function () {
+    imageInput.click();
+  });
+
+  imageInput.addEventListener('change', function () {
+    var file = imageInput.files[0];
+    if (!file) return;
+    var allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!allowed.includes(file.type)) {
+      alert('Only JPEG, PNG, GIF, and WebP images are supported.');
+      imageInput.value = '';
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      alert('Image must be smaller than 10 MB.');
+      imageInput.value = '';
+      return;
+    }
+    chatState.pendingImage = file;
+    previewThumb.src = URL.createObjectURL(file);
+    previewName.textContent = file.name;
+    previewBar.style.display = 'flex';
+  });
+
+  previewCancel.addEventListener('click', function () {
+    chatState.pendingImage = null;
+    imageInput.value = '';
+    previewBar.style.display = 'none';
+  });
 
   // Scroll handler for loading older messages
   var msgContainer = document.getElementById('messages-container');
@@ -136,13 +217,41 @@ function renderChatArea() {
   });
 
   // Send message form
-  document.getElementById('send-form').addEventListener('submit', function (e) {
+  document.getElementById('send-form').addEventListener('submit', async function (e) {
     e.preventDefault();
     var input = document.getElementById('msg-input');
     var text = input.value.trim();
-    if (!text || !chatState.selectedUser) return;
-    ws.sendMessage(chatState.selectedUser.id, text);
-    input.value = '';
+    var file = chatState.pendingImage;
+
+    if (!file && !text) return;
+    if (!chatState.selectedUser) return;
+
+    if (file) {
+      // Image message flow: get presigned URL → upload to S3 → send via WS
+      var sendBtn = document.querySelector('#send-form button[type="submit"]');
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Uploading...';
+      try {
+        var presigned = await api.getImageUploadUrl(file.name, file.type);
+        await api.uploadImageToS3(presigned.uploadUrl, file);
+        var content = text || '[image]';
+        ws.sendMessage(chatState.selectedUser.id, content, presigned.downloadUrl, presigned.imageKey);
+        input.value = '';
+        chatState.pendingImage = null;
+        document.getElementById('image-input').value = '';
+        document.getElementById('image-preview-bar').style.display = 'none';
+      } catch (err) {
+        console.error('[Chat] Image upload failed', err);
+        alert('Image upload failed: ' + err.message);
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Send';
+      }
+    } else {
+      // Text-only message
+      ws.sendMessage(chatState.selectedUser.id, text);
+      input.value = '';
+    }
   });
 }
 

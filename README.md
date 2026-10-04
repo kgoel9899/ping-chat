@@ -1,10 +1,10 @@
 # ChatApp — WhatsApp-like Chat Application
 
-A full-stack chat application built with **Spring Boot**, **Vanilla JS**, **PostgreSQL**, and **Kafka**, containerized with **Docker**. Built as an iterative performance project — starting from a simple polling baseline (V1) and optimized through 9 versions to a real-time architecture with async persistence and Kafka resilience.
+A full-stack chat application built with **Spring Boot**, **Vanilla JS**, **PostgreSQL**, **Kafka**, and **AWS S3**, containerized with **Docker**. Built as an iterative performance project — starting from a simple polling baseline (V1) and optimized through 10 versions to a real-time architecture with async persistence, Kafka resilience, and image messaging.
 
-**Current version: V9** — Kafka circuit breaker with background health probe, batch tuning, vanilla JS frontend. Zero message loss when Kafka goes down. send_message P95 **26ms @ 200u / 70ms @ 500u** (unchanged from V8 — V9 is a resilience + frontend upgrade).
+**Current version: V10** — Image messaging via S3 presigned URLs. New image-service microservice, nginx reverse proxy, direct S3 upload from the browser. send_message P95 **26ms @ 200u / 70ms @ 500u** (unchanged — image upload is a client-side S3 operation).
 
-## Architecture (V9 — Current)
+## Architecture (V10 — Current)
 
 ```
 ┌────────────────────────────────────┐       ┌────────────┐
@@ -28,13 +28,16 @@ A full-stack chat application built with **Spring Boot**, **Vanilla JS**, **Post
       Real-time push. DB write is async via Kafka.
 ```
 
-### What's been optimized (V1 → V8)
+### What's been optimized (V1 → V8) + Features (V9–V10)
 - ✅ **HikariCP pool** 10 → 50 (V2)
 - ✅ **User lookup caching** `@Cacheable` on `findByUsername` (V4)
 - ✅ **Pagination** LIMIT 15 per page with infinite scroll — scroll up for older messages, scroll down for more conversations (V5 + V7)
 - ✅ **Composite DB indexes** `(sender_id, timestamp DESC)` and `(receiver_id, timestamp DESC)` (V6)
 - ✅ **WebSocket (STOMP)** — HTTP polling replaced with persistent WS connection (V7)
 - ✅ **Kafka async batch persistence** — DB INSERT removed from hot path; messages published to Kafka, consumed in batches of up to 500 by 3 parallel threads, flushed via `saveAll()` with `hibernate.jdbc.batch_size=50` (V8)
+- ✅ **Kafka circuit breaker** — zero message loss when Kafka goes down, background health probe (V9)
+- ✅ **Image messaging** — S3 presigned URLs via separate image-service microservice, nginx reverse proxy, direct browser-to-S3 upload (V10)
+- ✅ **Image caching** — S3 `Cache-Control` headers (`public, max-age=604800, immutable`) so browsers serve images from disk cache on page refresh; auto-refresh of expired presigned URLs via `onerror` handler (V10)
 - **No build tooling** — Vanilla JS with zero framework dependencies (STOMP.js is the only CDN import)
 
 ## Tech Stack
@@ -43,9 +46,12 @@ A full-stack chat application built with **Spring Boot**, **Vanilla JS**, **Post
 |-----------|----------------------------------|
 | Frontend  | Vanilla JS (no React, no build step)    |
 | Backend   | Spring Boot 3.2, Java 17         |
+| Image Svc | Spring Boot 3.2, AWS S3 SDK v2   |
 | Auth      | JWT (jjwt)                        |
 | Database  | PostgreSQL 16                     |
 | Messaging | Apache Kafka 3.7.2 (KRaft mode)  |
+| Storage   | AWS S3 (presigned URLs)           |
+| Proxy     | Nginx                             |
 | Container | Docker Compose                    |
 | Load Test | Java (zero dependencies)           |
 
@@ -58,13 +64,21 @@ A full-stack chat application built with **Spring Boot**, **Vanilla JS**, **Post
 ### 1. Start the application
 
 ```bash
+# Set your AWS credentials (see AWS Setup below)
+export AWS_S3_BUCKET=chatapp-images
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+
 docker compose up --build
 ```
 
-This starts 3 containers:
+This starts 5 containers:
 - **postgres** — Database on port 5432
 - **kafka** — Apache Kafka (KRaft mode, no ZooKeeper) on port 9092
-- **backend** — Spring Boot API + static frontend on port 8080
+- **backend** — Spring Boot API + static frontend
+- **image-service** — S3 presigned URL generation
+- **nginx** — Reverse proxy on port 8080 (entry point)
 
 Wait until you see `Started ChatAppApplication` in the logs, then open **http://localhost:8080** in your browser.
 
@@ -75,6 +89,7 @@ Wait until you see `Started ChatAppApplication` in the logs, then open **http://
 3. In one tab, search for the other user's username
 4. Click on the user to start a conversation
 5. Send messages — they appear instantly in the other tab via WebSocket push
+6. Click the 📷 button to send an image — it uploads to S3 and appears inline in chat
 
 ## Docker Commands
 
@@ -163,6 +178,12 @@ docker compose exec postgres psql -U chatapp -d chatapp
 |--------|--------------------------|-----------------|
 | GET    | `/api/users/search?q=...` | Search users    |
 
+### Images (authenticated — via image-service)
+| Method | Endpoint                            | Description                       |
+|--------|-------------------------------------|-----------------------------------|
+| POST   | `/api/images/presign/upload`        | Get presigned S3 upload + download URLs |
+| GET    | `/api/images/presign/download?imageKey=...` | Refresh expired download URL |
+
 ### Example: curl usage
 ```bash
 # Register
@@ -184,6 +205,139 @@ curl -X POST http://localhost:8080/api/messages \
 # Get conversation
 curl http://localhost:8080/api/messages/conversation/2 \
   -H "Authorization: Bearer <token>"
+
+# Get presigned upload URL for an image
+curl -X POST http://localhost:8080/api/images/presign/upload \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{"filename":"photo.jpg","contentType":"image/jpeg"}'
+
+# Upload image directly to S3 (use uploadUrl from response above)
+curl -X PUT "<uploadUrl>" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @photo.jpg
+
+# Send message with image (use downloadUrl and imageKey from presign response)
+curl -X POST http://localhost:8080/api/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{"receiverId":2,"content":"Check this out!","imageUrl":"<downloadUrl>","imageKey":"images/alice/uuid.jpg"}'
+```
+
+## AWS S3 Setup
+
+The image-service requires an AWS S3 bucket. Follow these steps to set it up:
+
+### Step 1: Create an S3 Bucket
+
+1. Go to [AWS S3 Console](https://s3.console.aws.amazon.com/)
+2. Click **Create bucket**
+3. Bucket name: `chatapp-images` (or your preferred name)
+4. Region: choose your preferred region (e.g., `us-east-1`)
+5. **Block Public Access**: keep **all blocked** (presigned URLs bypass this)
+6. Click **Create bucket**
+
+### Step 2: Configure CORS on the Bucket
+
+The browser uploads directly to S3, so CORS must be configured:
+
+1. Go to your bucket → **Permissions** tab → **Cross-origin resource sharing (CORS)**
+2. Add this CORS configuration:
+
+```json
+[
+  {
+    "AllowedHeaders": ["*"],
+    "AllowedMethods": ["PUT", "GET"],
+    "AllowedOrigins": ["http://localhost:8080"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+> For production, replace `http://localhost:8080` with your actual domain.
+
+### Step 3: Create an IAM User with S3 Permissions
+
+1. Go to [IAM Console](https://console.aws.amazon.com/iam/) → **Users** → **Create user**
+2. Username: `chatapp-image-service`
+3. Click **Next** → **Attach policies directly**
+4. Create a custom policy with this JSON (principle of least privilege):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject"
+      ],
+      "Resource": "arn:aws:s3:::chatapp-images/*"
+    }
+  ]
+}
+```
+
+5. Attach the policy to the user
+6. Go to the user → **Security credentials** → **Create access key**
+7. Choose **Application running outside AWS** → **Create access key**
+8. Save the **Access Key ID** and **Secret Access Key**
+
+### Step 4: Configure Environment Variables
+
+Set these environment variables before running `docker compose up`:
+
+```bash
+export AWS_S3_BUCKET=chatapp-images
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=AKIA...your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+```
+
+Or create a `.env` file in the project root:
+
+```env
+AWS_S3_BUCKET=chatapp-images
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=AKIA...your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+```
+
+### Step 5: (Optional) Bucket Lifecycle Policy
+
+To automatically delete old images and control storage costs:
+
+1. Go to your bucket → **Management** tab → **Create lifecycle rule**
+2. Rule name: `delete-old-images`
+3. Apply to all objects (prefix: `images/`)
+4. Transition: move to **S3 Glacier** after 90 days
+5. Expiration: delete after 365 days
+
+### Alternative: LocalStack for Local Development
+
+For local development without AWS, use [LocalStack](https://localstack.cloud/):
+
+```bash
+# Add to docker-compose.yml:
+#   localstack:
+#     image: localstack/localstack
+#     ports:
+#       - "4566:4566"
+#     environment:
+#       SERVICES: s3
+
+# Then set:
+export AWS_S3_ENDPOINT=http://localstack:4566
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_REGION=us-east-1
+export AWS_S3_BUCKET=chatapp-images
+
+# Create the bucket:
+# docker compose exec localstack awslocal s3 mb s3://chatapp-images
 ```
 
 ## Load Testing
@@ -338,7 +492,8 @@ ORDER BY m.timestamp DESC LIMIT 10;
 | **V6** | Composite indexes `(sender_id, timestamp DESC)` etc. | P95=504ms @ 200u / 499ms @ 500u |
 | **V7** | WebSocket (STOMP) — replaced HTTP polling | P95=105ms @ 200u / 99ms @ 500u; polling eliminated |
 | **V8** | Kafka async batch persistence — DB write removed from hot path | P95=26ms @ 200u / 70ms @ 500u (-78/-29%) |
-| **V9 (current)** | Kafka circuit breaker, batch tuning, vanilla JS frontend | Zero message loss when Kafka goes down |
+| **V9** | Kafka circuit breaker, batch tuning, vanilla JS frontend | Zero message loss when Kafka goes down |
+| **V10 (current)** | Image messaging (S3 presigned URLs), image-service microservice, nginx proxy, browser caching, expired URL auto-refresh | Direct S3 upload; 7-day URL expiry; Cache-Control headers; onerror refresh |
 
 Each version will include load test results to demonstrate the measurable improvement.
 

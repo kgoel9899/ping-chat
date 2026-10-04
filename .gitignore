@@ -18,10 +18,12 @@ Thumbs.db
 # Docker
 pgdata/
 
+# Secrets
+.env
+
 # Load test results
 loadtest/results.json
 
 # Secrets, build output, editor tooling
-.env
 target/
 .github/java-upgrade/

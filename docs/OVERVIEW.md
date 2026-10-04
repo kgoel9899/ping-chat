@@ -2,13 +2,13 @@
 
 A WhatsApp-like real-time chat application built iteratively as a **performance engineering exercise**. The goal was to start with the simplest possible architecture, measure it under load, identify bottlenecks, and fix them one version at a time with data.
 
-**Stack**: Spring Boot 3.2 · PostgreSQL 16 · Apache Kafka 3.7.2 · Vanilla JS · Docker Compose
+**Stack**: Spring Boot 3.2 · PostgreSQL 16 · Apache Kafka 3.7.2 · AWS S3 · Vanilla JS · Docker Compose
 
 ---
 
 ## 1. What the App Does
 
-Users register, log in, search for other users, and exchange messages in real time. The conversation list and message history are paginated. All session state is held in `localStorage` via a JWT token — there are no server-side sessions.
+Users register, log in, search for other users, and exchange messages in real time. Users can also send images — uploaded directly to AWS S3 via presigned URLs and displayed inline in the chat. The conversation list and message history are paginated. All session state is held in `localStorage` via a JWT token — there are no server-side sessions.
 
 ---
 
@@ -27,6 +27,7 @@ Each version fixed one specific bottleneck. Load tests before and after validate
 | V7 | WebSocket (STOMP) — replaced HTTP polling | P95 = 105ms @ 200u (5.6× faster than V6) |
 | V8 | Kafka async batch persistence | P95 = 26ms @ 200u — DB write removed from hot path |
 | V9 | Kafka circuit breaker + vanilla JS migration | Zero message loss when Kafka goes down |
+| V10 | Image messaging via S3 presigned URLs | New image-service microservice, nginx proxy, direct S3 upload, 7-day URL expiry, browser caching via Cache-Control, auto-refresh on expired URLs |
 
 ---
 
@@ -198,19 +199,43 @@ Full results per endpoint and per version: [LOAD_TEST_RESULTS.md](LOAD_TEST_RESU
 
 ## 12. Docker Infrastructure
 
-Three containers, one `docker-compose.yml`:
+Five containers, one `docker-compose.yml`:
 
 | Container | Image | Role |
 |-----------|-------|------|
 | `postgres` | `postgres:16-alpine` | Persistent database (named volume `pgdata`) |
 | `kafka` | `apache/kafka:3.7.2` | KRaft mode (no ZooKeeper), topic `chat-messages` with 3 partitions |
 | `backend` | Multi-stage build | Maven compile → JRE 17 runtime image |
+| `image-service` | Multi-stage build | S3 presigned URL generation, JWT auth (shared secret) |
+| `nginx` | `nginx:alpine` | Reverse proxy: routes `/api/images/*` to image-service, everything else to backend |
 
 `backend` depends on `postgres: condition: service_healthy`. Kafka has no volume mount — `docker compose down` loses uncommitted Kafka messages (intentional for dev simplicity; in production mount a named volume).
 
 ---
 
-## 13. Security Notes
+## 13. Image Messaging (V10)
+
+Users can send images in chat. The flow uses **presigned S3 URLs** so image data never touches the backend:
+
+1. Client calls `POST /api/images/presign/upload` (image-service) with filename + content type
+2. Image-service generates a presigned PUT URL (upload) and GET URL (download) from AWS S3
+3. Client uploads the image directly to S3 via the presigned PUT URL
+4. Client sends a WebSocket message with `imageUrl` (presigned GET) and `imageKey` (S3 key)
+5. Both users receive the message with the image URL — rendered as an inline `<img>` tag
+
+**Supported formats**: JPEG, PNG, GIF, WebP (max 10MB).
+
+**URL expiration**: Upload URLs expire in 15 minutes; download URLs expire in **7 days** (10,080 minutes — the maximum for IAM user credentials). When a download URL expires, the `<img>` tag's `onerror` handler automatically calls `GET /api/images/presign/download?imageKey=...` to get a fresh URL — no user action needed.
+
+**Browser caching**: Presigned GET URLs include a `response-cache-control` parameter (`public, max-age=604800, immutable`). S3 returns this as the `Cache-Control` header, so browsers serve images from disk cache on subsequent page loads instead of re-downloading from S3.
+
+**Logging**: The image-service includes structured logging at the controller, filter, and exception handler levels — request/response logging on both endpoints, JWT auth debug/warn logging, and error stack traces.
+
+**Architecture**: The image-service is a separate Spring Boot microservice with its own Dockerfile. It shares the JWT secret with the backend for token validation. Nginx routes `/api/images/*` requests to it.
+
+---
+
+## 14. Security Notes
 
 - Passwords hashed with **BCrypt** (cost factor 10, ~80–150ms per hash — intentionally slow)
 - Auth via **JWT** (HMAC-SHA384, 24h expiry) — stateless, no server-side sessions

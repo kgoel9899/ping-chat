@@ -27,6 +27,12 @@ public class Message {
     @Column(nullable = false, columnDefinition = "TEXT")
     private String content;
 
+    @Column(name = "image_url", columnDefinition = "TEXT")
+    private String imageUrl;
+
+    @Column(name = "image_key")
+    private String imageKey;
+
     @Column(name = "timestamp")
     private LocalDateTime timestamp;
 

@@ -1,0 +1,36 @@
+spring:
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+server:
+  port: 8081
+
+# AWS S3 configuration
+aws:
+  s3:
+    bucket: ${AWS_S3_BUCKET:chatapp-images}
+    region: ${AWS_REGION:us-east-1}
+    access-key: ${AWS_ACCESS_KEY_ID:}
+    secret-key: ${AWS_SECRET_ACCESS_KEY:}
+    endpoint: ${AWS_S3_ENDPOINT:}  # leave empty for real AWS; set for LocalStack
+  presigned-url:
+    upload-expiration-minutes: ${PRESIGNED_UPLOAD_EXPIRY:15}
+    download-expiration-minutes: ${PRESIGNED_DOWNLOAD_EXPIRY:10080}  # 7 days (max for IAM credentials)
+
+jwt:
+  secret: ${JWT_SECRET:my-super-secret-key-that-is-at-least-32-bytes-long-for-hs256}
+
+# Allowed image types
+image:
+  allowed-content-types:
+    - image/jpeg
+    - image/png
+    - image/gif
+    - image/webp
+  max-size-bytes: 10485760  # 10 MB
+
+logging:
+  level:
+    com.chatapp: INFO

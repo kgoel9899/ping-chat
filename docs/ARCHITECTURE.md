@@ -18,6 +18,8 @@
 14. [Kafka Debug & Observability](#kafka-debug--observability)
 15. [PostgreSQL Inspection](#postgresql-inspection)
 16. [Scaling Roadmap](#scaling-roadmap)
+17. [S3 Presigned URLs — Deep Dive](#s3-presigned-urls--deep-dive)
+18. [Nginx Reverse Proxy — Deep Dive](#nginx-reverse-proxy--deep-dive)
 
 > All load test results are in [docs/LOAD_TEST_RESULTS.md](LOAD_TEST_RESULTS.md).
 
@@ -60,44 +62,45 @@ ChatApp is a WhatsApp-like real-time messaging application built as an iterative
 |  HTTP GET: /api/messages/conversations   (once on open)   |
 |  WS SEND:  /app/chat.send  (each message)                 |
 |  WS PUSH:  /user/queue/messages (server push on new msg)  |
+|  Image upload: PUT presigned URL directly to S3            |
 +-------------------------------+---------------------------+
                                 |
-                     HTTP + WebSocket (port 8080)
+                     HTTP + WebSocket (port 8080 via nginx)
                                 |
 +-------------------------------v---------------------------+
-|                  Spring Boot Backend                       |
-|  (Single container, single JVM, Tomcat embedded)          |
-|                                                           |
-|  +---------------------+  +---------------------------+   |
-|  | Security Filter      |  | Request Logging Filter    |   |
-|  | Chain:               |  | Logs: method, path,       |   |
-|  |  1. RequestLogging   |  | status, duration for      |   |
-|  |  2. JwtAuthFilter    |  | all /api/* requests       |   |
-|  |  3. SecurityConfig   |  +---------------------------+   |
-|  +---------------------+                                   |
-|                                                           |
-|  +---------------------+  +---------------------------+   |
-|  | AuthController       |  | MessageController         |   |
-|  |  POST /auth/register |  |  @MessageMapping /chat.send|  |
-|  |  POST /auth/login    |  |  GET  /messages/conv/{id} |   |
-|  +---------------------+  |  GET  /messages/convs      |   |
-|                            +---------------------------+   |
-|  +---------------------+                                   |
-|  | UserController       |  +---------------------------+   |
-|  |  GET /users/search   |  | Service Layer              |   |
-|  +---------------------+  |  AuthService (BCrypt)       |   |
-|                            |  MessageService:             |   |
-|                            |   WS push + Kafka publish    |   |
-|                            |   (no sync DB write)         |   |
-|  +---------------------+  +---------------------------+   |
-|  | JPA / Hibernate      |  +---------------------------+   |
-|  | HikariCP Pool: 50    |  | SimpleBroker (in-memory)  |   |
-|  | @Cacheable users     |  | /user/queue/messages      |   |
-|  | batch_size: 50       |  +---------------------------+   |
-|  +----------+-----------+                                  |
-+--------------+--------------------------------------------+
-               |                                              
-         JDBC (port 5432)               Kafka (port 9092)
+|                      Nginx :80 (exposed as :8080)         |
+|  /api/images/*  → image-service:8081                      |
+|  /ws            → backend:8080 (WebSocket upgrade)        |
+|  /*             → backend:8080 (static + REST API)        |
++------+----------------------------+-----------------------+
+       |                            |
+       v                            v
++------+-----------+  +-------------+--------------------+
+| Image Service    |  |       Spring Boot Backend        |
+| :8081            |  |  (Single container, single JVM)  |
+| AWS S3 presigned |  |                                  |
+| URL generation   |  |  +----------+  +---------------+ |
+| JWT validation   |  |  | Security |  | RequestLogging| |
+| (shared secret)  |  |  | Filter   |  | Filter        | |
++------------------+  |  +----------+  +---------------+ |
+       |               |                                  |
+       v               |  +---------+  +---------------+ |
++------------------+   |  | Auth    |  | Message       | |
+|    AWS S3        |   |  | Contrlr |  | Controller    | |
+| chatapp-images   |   |  +---------+  +---------------+ |
+| bucket           |   |  +---------+                    |
++------------------+   |  | User    |  +---------------+ |
+                       |  | Contrlr |  | Service Layer | |
+                       |  +---------+  | WS push +     | |
+                       |               | Kafka publish  | |
+                       |  +---------+  +---------------+ |
+                       |  | JPA /   |  +---------------+ |
+                       |  | Hikari  |  | SimpleBroker  | |
+                       |  | Pool:50 |  | /user/queue/  | |
+                       |  +----+----+  +---------------+ |
+                       +-------+---------------------------+
+                               |                            
+                         JDBC (5432)       Kafka (9092)
                |                             |
 +--------------v-----------+  +--------------v--------------+
 |    PostgreSQL 16         |  |     Apache Kafka 3.7.2      |
@@ -110,9 +113,11 @@ ChatApp is a WhatsApp-like real-time messaging application built as an iterative
 ```
 
 Key points:
-- **3 Docker containers** (backend + postgres + kafka). No reverse proxy, no cache layer.
-- **Frontend is served from Spring Boot's static resources** — no separate web server.
+- **5 Docker containers** (nginx + backend + image-service + postgres + kafka). Nginx reverse proxy routes `/api/images/*` to image-service, everything else to backend.
+- **Image Service** — separate Spring Boot microservice for S3 presigned URL generation. Shares JWT secret with backend for auth.
+- **Frontend is served from Spring Boot's static resources** — proxied through nginx.
 - **WebSocket (STOMP)** — messages sent and received over a persistent connection. No polling.
+- **Image messages** — client gets a presigned PUT URL from image-service, uploads directly to S3, then sends a chat message containing the presigned GET URL and S3 key.
 - **Kafka async persistence** — `sendMessage()` pushes WS instantly + publishes to Kafka. `MessagePersistenceConsumer` reads batches, writes via `saveAll()` with `hibernate.jdbc.batch_size=50`. All Kafka config is in `application.yml` (`spring.kafka.listener.type=batch`, `concurrency=3`); only a `NewTopic` bean in `KafkaConfig.java`.
 - **3 consumer threads** (one per Kafka partition) for parallel DB writes.
 - **HikariCP pool=50** — tuned from V1's default of 10.
@@ -122,13 +127,24 @@ Key points:
 
 ## Request Flow
 
-Every HTTP request goes through this pipeline:
+Every request from the browser goes through nginx first. Nginx decides which backend service handles it based on the URL path.
+
+### Full request pipeline (HTTP)
 
 ```
-Browser Request
+Browser (http://localhost:8080/api/messages/conversations)
       |
       v
-[Tomcat Thread Pool (200 threads default)]
+[Nginx :80 (exposed as :8080 on host)]
+  - Matches location blocks in order:
+    1. /api/images/*  → proxy_pass http://image-service:8081
+    2. /ws            → proxy_pass http://backend:8080 (WebSocket upgrade)
+    3. /*             → proxy_pass http://backend:8080 (catch-all)
+  - Adds headers: X-Real-IP, X-Forwarded-For, X-Forwarded-Proto
+  - This request matches /* → forwarded to backend
+      |
+      v
+[Backend — Tomcat Thread Pool (200 threads default)]
       |
       v
 [RequestLoggingFilter]
@@ -140,7 +156,7 @@ Browser Request
 [JwtAuthFilter]
   - Extracts "Authorization: Bearer <token>" header
   - Calls JwtUtil.validateToken() -> parses HMAC-SHA384 signature
-  - If valid: loads User from DB, sets SecurityContext
+  - If valid: loads User from DB (cached), sets SecurityContext
   - If missing/invalid: passes through (SecurityConfig will reject if protected)
       |
       v
@@ -216,7 +232,8 @@ Client                          Backend                         Database
 Client (WebSocket)               Backend                         Kafka               Database
   |                                |                               |                   |
   |  STOMP SEND /app/chat.send     |                               |                   |
-  |  {receiverId, content}         |                               |                   |
+  |  {receiverId, content,         |                               |                   |
+  |   imageUrl?, imageKey?}        |                               |                   |
   |------------------------------->|                               |                   |
   |  (frame queued in             |                               |                   |
   |   inboundChannel — non-       |  @MessageMapping handler picks|                   |
@@ -285,17 +302,18 @@ The frontend has **zero build tooling** — no webpack, no vite, no npm, **no Re
 ```
 backend/src/main/resources/static/
   index.html          # Loads only STOMP.js from CDN; no React, no Babel
-  css/app.css         # WhatsApp dark theme
+  css/app.css         # WhatsApp dark theme + image message styles
   js/
-    api.js            # HTTP fetch wrapper + WebSocket STOMP connection manager
+    api.js            # HTTP fetch wrapper + WebSocket STOMP connection + image upload API
     auth.js           # renderLoginPage() + renderRegisterPage() — vanilla DOM
-    chat.js           # renderChatPage() — vanilla JS, real-time WS, infinite scroll, dedup
+    chat.js           # renderChatPage() — vanilla JS, real-time WS, infinite scroll, dedup, image send/display
     app.js            # IIFE entry point — manages auth state, renders pages
 ```
 
 - **Vanilla JavaScript** — all DOM rendering via `innerHTML` and `addEventListener`
 - **No React, no Babel, no JSX** — scripts loaded as plain `<script>` tags
 - **STOMP.js** is the only CDN dependency (for WebSocket communication)
+- **Image support**: camera button opens file picker → presigned URL from image-service → direct PUT to S3 → message with `imageUrl`/`imageKey` sent via WS → images rendered inline with click-to-preview
 - Dedup logic preserved: `clientId` (UUID) for WS-pushed messages, composite key fallback for DB-loaded messages
 - XSS prevention: user-generated content rendered via `escapeHtml()` (creates a text node, reads `innerHTML`)
 - All API calls go through `api.js` which:
@@ -325,6 +343,8 @@ backend/src/main/resources/static/
 | sender_id   | BIGINT              | FK -> users.id, NOT NULL       |
 | receiver_id | BIGINT              | FK -> users.id, NOT NULL       |
 | content     | TEXT                | NOT NULL                       |
+| image_url   | TEXT                | NULLABLE (presigned S3 GET URL)|
+| image_key   | VARCHAR(255)        | NULLABLE (S3 object key)       |
 | timestamp   | TIMESTAMP           | Set by @PrePersist             |
 | is_read     | BOOLEAN             | Default false                  |
 
@@ -349,8 +369,12 @@ Both paginated queries (`findConversation`, `findConversationPartnerIds`) use an
 | GET    | /api/messages/conversation/{id}   | Yes  | Get all messages with user {id}    |
 | GET    | /api/messages/conversations       | Yes  | Get list of conversation partners  |
 | GET    | /api/users/search?q=              | Yes  | Search users by username           |
+| POST   | /api/images/presign/upload        | Yes  | Get presigned S3 upload + download URLs |
+| GET    | /api/images/presign/download?imageKey= | Yes | Refresh expired download URL  |
 
 All authenticated endpoints require `Authorization: Bearer <jwt-token>` header.
+
+The image endpoints are served by the **image-service** microservice (port 8081), routed via nginx.
 
 ---
 
@@ -363,11 +387,23 @@ services:
     healthcheck: pg_isready -U chatapp (every 5s)
     volume: pgdata (persistent)
 
+  kafka:               # Apache Kafka 3.7.2 (KRaft mode)
+    ports: 9092:9092
+    healthcheck: kafka-topics.sh --list (every 10s)
+
   backend:             # Spring Boot (JRE 17)
     build: ./backend   # Multi-stage: maven build -> JRE runtime
-    ports: 8080:8080
-    depends_on: postgres (healthy)
+    depends_on: postgres (healthy), kafka (healthy)
     restart: on-failure
+
+  image-service:       # Spring Boot (JRE 17) — S3 presigned URLs
+    build: ./image-service
+    env: AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+    restart: on-failure
+
+  nginx:               # Reverse proxy (entry point)
+    ports: 8080:80
+    routes: /api/images/* -> image-service, /ws -> backend (WS upgrade), /* -> backend
 ```
 
 **Multi-stage Dockerfile**:
@@ -1281,10 +1317,11 @@ A single statement with 50 `(?,?,?,?,?)` placeholders confirms batching.
 | 8    | Kafka resilience — circuit breaker with background probe | **DONE V9** | If Kafka is down, messages persist directly to DB; zero message loss; background health probe every 10s |
 | 9    | Frontend migrated to vanilla JS (no React)     | **DONE V9** | Removed React/Babel CDN deps; pure DOM rendering; smaller page load           |
 | 10   | DB save logging + consumer batch tuning        | **DONE V9** | `log.info` on every batch save; `fetch.min.bytes=10KB` for forced batching    |
-| 11   | Horizontal scaling (2+ instances)             | Planned     | Linear throughput increase                                                    |
-| 9    | Read replicas for PostgreSQL                  | Future      | Separate read/write workloads                                                 |
+| 11   | Image messaging via S3 presigned URLs          | **DONE V10** | New image-service microservice; nginx reverse proxy; direct S3 upload from client |
+| 12   | Horizontal scaling (2+ instances)             | Planned     | Linear throughput increase                                                    |
+| 13   | Read replicas for PostgreSQL                  | Future      | Separate read/write workloads                                                 |
 
-**Current baseline (V9)**: send_message P95 **26ms @ 200u / 70ms @ 500u**. DB INSERT fully removed from the hot path. Circuit breaker ensures zero message loss when Kafka is down. Background probe auto-recovers within 10 seconds of Kafka coming back.
+**Current baseline (V10)**: send_message P95 **26ms @ 200u / 70ms @ 500u** (unchanged from V8/V9 — image upload is a client-side S3 operation, not on the message hot path). V10 adds image messaging via a new image-service microservice, nginx reverse proxy, and direct S3 upload from the browser.
 **Next target**: Horizontal scaling (multiple backend instances) — Stateless JWT is already in place; adding a load balancer + second instance + Redis pub/sub for WS routing is the natural next step.
 
 ---
@@ -1421,4 +1458,436 @@ All database persistence paths now emit `log.info` statements:
 
 ---
 
-*Last updated: April 8, 2026 (V9 — circuit breaker, batch tuning, vanilla JS). Tests run on Docker Desktop; production numbers will differ.*
+## V10 Changes — Image Messaging via S3 Presigned URLs
+
+### New: Image Service Microservice
+
+A separate Spring Boot service (`image-service/`, port 8081) that handles AWS S3 presigned URL generation. It shares the JWT secret with the backend for token validation — no user database needed.
+
+**Endpoints**:
+- `POST /api/images/presign/upload` — generates a presigned PUT URL for uploading + a presigned GET URL for downloading
+- `GET /api/images/presign/download?imageKey=...` — refreshes an expired presigned GET URL
+
+**Why a separate service?**
+- The S3 SDK adds ~30MB to the JAR. Keeping it separate avoids bloating the backend.
+- Can be scaled independently (image uploads are bursty, text messages are steady).
+- Clear separation of concerns — the backend handles messaging, the image service handles S3.
+
+### Image Message Flow
+
+```
+Client                          Image Service           AWS S3              Backend
+  |                                |                      |                   |
+  | 1. POST /api/images/presign/upload                     |                   |
+  |    {filename, contentType}     |                      |                   |
+  |------------------------------->|                      |                   |
+  |                                | Generate S3 key       |                   |
+  |                                | (images/{user}/{uuid}.jpg)               |
+  |                                | Sign PUT + GET URLs   |                   |
+  |    {uploadUrl, imageKey,       |                      |                   |
+  |     downloadUrl}               |                      |                   |
+  |<-------------------------------|                      |                   |
+  |                                                        |                   |
+  | 2. PUT uploadUrl (presigned)                           |                   |
+  |    Content-Type: image/jpeg                            |                   |
+  |    Body: <raw image bytes>                             |                   |
+  |------------------------------------------------------->|                  |
+  |    200 OK                                              |                   |
+  |<-------------------------------------------------------|                  |
+  |                                                        |                   |
+  | 3. STOMP SEND /app/chat.send                           |                   |
+  |    {receiverId, content: "[image]",                    |                   |
+  |     imageUrl: downloadUrl, imageKey: "images/..."}     |                   |
+  |---------------------------------------------------------------->|         |
+  |                                                        |  WS push + Kafka |
+  |    PUSH /user/queue/messages                           |                   |
+  |    {content, imageUrl, imageKey, ...}                  |                   |
+  |<-----------------------------------------------------------------|        |
+```
+
+**Key design decisions**:
+1. **Client uploads directly to S3** via presigned PUT URL — the image never touches the backend or image-service. Zero server-side bandwidth for image data.
+2. **`imageUrl` is a presigned GET URL** embedded in the message. Recipients display it as an `<img>` tag. URLs expire after **7 days** (10,080 minutes — the maximum for IAM user credentials, configurable via `PRESIGNED_DOWNLOAD_EXPIRY`).
+3. **`imageKey` is the S3 object key** stored in the database. When a presigned URL expires, the `<img>` tag's `onerror` handler automatically calls `/api/images/presign/download?imageKey=...` to get a fresh URL — transparent to the user.
+4. **Supported formats**: JPEG, PNG, GIF, WebP. Max 10MB. Validated both client-side and server-side.
+5. **Browser caching**: Presigned GET URLs include `response-cache-control=public, max-age=604800, immutable`. S3 returns this as the `Cache-Control` response header, allowing browsers to serve images from disk cache on page refreshes without re-downloading from S3.
+6. **Logging**: `@Slf4j` on `ImageController`, `JwtAuthFilter`, and `GlobalExceptionHandler` — request/response logging, auth debug traces, and error stack traces for observability.
+
+### Nginx Reverse Proxy — Deep Dive
+
+Nginx sits as the **single entry point** for all client traffic on port 8080. It routes requests to one of two backend services based on URL pattern matching. The browser never connects directly to the backend or image-service containers.
+
+#### Why nginx?
+
+Without nginx, the browser would need to talk to two different origins:
+- `http://localhost:8080` for the backend (REST API + static files + WebSocket)
+- `http://localhost:8081` for the image-service (presigned URL generation)
+
+Two origins means **CORS preflight requests** on every image API call (browser sends an `OPTIONS` request before the actual `POST`/`GET`). With nginx, everything is served from `http://localhost:8080` — same origin, no CORS needed.
+
+#### nginx.conf — annotated
+
+```nginx
+upstream backend {
+    server backend:8080;       # Docker DNS resolves 'backend' to the container IP
+}
+
+upstream image-service {
+    server image-service:8081; # Docker DNS resolves 'image-service' to the container IP
+}
+
+server {
+    listen 80;                 # Nginx listens on port 80 inside the container
+                               # Docker maps host:8080 → container:80
+
+    client_max_body_size 10m;  # Max request body size (relevant for future direct uploads)
+
+    # ── Route 1: Image service API ──────────────────────────────
+    # Matches: /api/images/presign/upload, /api/images/presign/download?imageKey=...
+    location /api/images/ {
+        proxy_pass http://image-service;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;            # Client's real IP
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;         # http or https
+    }
+
+    # ── Route 2: WebSocket upgrade ──────────────────────────────
+    # Matches: /ws (SockJS WebSocket endpoint)
+    location /ws {
+        proxy_pass http://backend;
+        proxy_http_version 1.1;                             # Required for WS upgrade
+        proxy_set_header Upgrade $http_upgrade;             # Pass the Upgrade header
+        proxy_set_header Connection "upgrade";              # Tell backend to upgrade
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;                           # 24h — keep WS alive
+    }
+
+    # ── Route 3: Everything else → backend ──────────────────────
+    # Matches: /, /index.html, /css/*, /js/*, /api/auth/*, /api/messages/*, /api/users/*
+    location / {
+        proxy_pass http://backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+#### Location block matching order
+
+Nginx matches `location` blocks using a **prefix match** — the longest matching prefix wins. The order in the config file does not matter for prefix locations (it does for regex locations, but we don't use any).
+
+| Request path | Longest prefix match | Routed to |
+|---|---|---|
+| `/api/images/presign/upload` | `/api/images/` (14 chars) | `image-service:8081` |
+| `/api/images/presign/download?imageKey=...` | `/api/images/` (14 chars) | `image-service:8081` |
+| `/ws` | `/ws` (3 chars) | `backend:8080` (WebSocket upgrade) |
+| `/ws/info` | `/ws` (3 chars) | `backend:8080` (SockJS info endpoint) |
+| `/api/auth/login` | `/` (1 char, catch-all) | `backend:8080` |
+| `/api/messages/conversations` | `/` (1 char, catch-all) | `backend:8080` |
+| `/api/users/search?q=alice` | `/` (1 char, catch-all) | `backend:8080` |
+| `/index.html` | `/` (1 char, catch-all) | `backend:8080` |
+| `/css/app.css` | `/` (1 char, catch-all) | `backend:8080` |
+| `/js/chat.js` | `/` (1 char, catch-all) | `backend:8080` |
+
+#### WebSocket upgrade — how it works through nginx
+
+HTTP/1.1 WebSocket upgrade is a two-step process. Nginx must pass the upgrade headers through to the backend, or the connection stays as plain HTTP.
+
+```
+Browser                          Nginx                          Backend
+  |                                |                              |
+  | GET /ws/123/abc/websocket      |                              |
+  | Connection: Upgrade            |                              |
+  | Upgrade: websocket             |                              |
+  | Sec-WebSocket-Key: dGhlIH...   |                              |
+  |------------------------------->|                              |
+  |                                | proxy_http_version 1.1       |
+  |                                | Upgrade: $http_upgrade       |
+  |                                |   (= "websocket")            |
+  |                                | Connection: "upgrade"        |
+  |                                |                              |
+  |                                | GET /ws/123/abc/websocket    |
+  |                                | Connection: Upgrade           |
+  |                                | Upgrade: websocket           |
+  |                                |----------------------------->|
+  |                                |                              |
+  |                                |  HTTP/1.1 101 Switching      |
+  |                                |  Connection: Upgrade          |
+  |                                |  Upgrade: websocket          |
+  |                                |<-----------------------------|
+  |  HTTP/1.1 101 Switching        |                              |
+  |  Connection: Upgrade           |                              |
+  |  Upgrade: websocket           |                              |
+  |<-------------------------------|                              |
+  |                                                               |
+  |  ←─────── WebSocket frames flow bidirectionally ──────────→   |
+  |                   (STOMP CONNECT, SUBSCRIBE,                  |
+  |                    SEND, MESSAGE frames)                       |
+```
+
+**Key nginx directives for WebSocket**:
+- `proxy_http_version 1.1` — WebSocket requires HTTP/1.1 (nginx defaults to 1.0 for proxied requests)
+- `proxy_set_header Upgrade $http_upgrade` — passes the client's `Upgrade: websocket` header to the backend
+- `proxy_set_header Connection "upgrade"` — overrides nginx's default `Connection: close` with `upgrade`
+- `proxy_read_timeout 86400` — keeps the connection alive for 24 hours. Without this, nginx closes idle WebSocket connections after the default 60 seconds
+
+#### Request flow per endpoint type
+
+**1. Static file request** (page load):
+```
+Browser → GET /index.html
+  → Nginx (location /) → backend:8080
+  → Spring Boot serves from classpath:static/index.html
+  → Response: 200 OK, text/html
+```
+
+**2. REST API request** (authenticated):
+```
+Browser → POST /api/messages {receiverId, content}
+  → Nginx (location /) → backend:8080
+  → RequestLoggingFilter → JwtAuthFilter → SecurityConfig → MessageController
+  → Response: 200 OK, JSON
+```
+
+**3. Image presign request** (authenticated):
+```
+Browser → POST /api/images/presign/upload {filename, contentType}
+  → Nginx (location /api/images/) → image-service:8081
+  → JwtAuthFilter (image-service) → SecurityConfig → ImageController
+  → Response: 200 OK, {uploadUrl, downloadUrl, imageKey}
+```
+
+**4. WebSocket connection** (upgrade):
+```
+Browser → GET /ws (Upgrade: websocket)
+  → Nginx (location /ws, upgrade headers) → backend:8080
+  → Spring WebSocket handshake → STOMP CONNECT → SUBSCRIBE /user/queue/messages
+  → Persistent bidirectional connection
+```
+
+**5. Image download** (direct to S3, bypasses nginx entirely):
+```
+Browser → GET https://chatapp-images.s3.amazonaws.com/images/alice/uuid.jpg?X-Amz-...
+  → AWS S3 (presigned URL) → 200 OK, image/jpeg, Cache-Control: public, max-age=604800
+  → Browser caches on disk
+```
+
+Note: image downloads **never go through nginx**. The `<img src="...">` points directly to the S3 presigned URL. Only the presigned URL *generation* goes through nginx → image-service.
+
+#### Network topology inside Docker
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Docker bridge network                      │
+│                    (chat-app_default)                         │
+│                                                               │
+│   ┌───────────┐    ┌────────────┐    ┌──────────────────┐   │
+│   │  nginx    │    │  backend   │    │  image-service   │   │
+│   │  :80      │───▶│  :8080     │    │  :8081           │   │
+│   │           │    │            │    │                   │   │
+│   │           │─────────────────────▶│                   │   │
+│   └─────┬─────┘    └──────┬─────┘    └──────────────────┘   │
+│         │                 │                                   │
+│    host:8080              │ JDBC :5432    Kafka :9092        │
+│    (exposed)              │         │         │               │
+│                    ┌──────▼─────┐  ┌▼─────────▼──┐          │
+│                    │ PostgreSQL │  │    Kafka     │          │
+│                    │  :5432     │  │    :9092     │          │
+│                    └────────────┘  └──────────────┘          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- Only **nginx port 8080** is exposed to the host. Backend (:8080) and image-service (:8081) are internal only.
+- All containers communicate via Docker's internal DNS — `backend`, `image-service`, `postgres`, `kafka` resolve to container IPs automatically.
+- The browser connects to `localhost:8080` (nginx). Nginx proxies to the correct internal service.
+- Image downloads go directly from the browser to AWS S3 — they don't traverse the Docker network at all.
+
+### Database Changes
+
+Two new nullable columns added to the `messages` table:
+
+| Column    | Type         | Description |
+|-----------|--------------|-------------|
+| image_url | TEXT         | Presigned S3 GET URL at time of sending |
+| image_key | VARCHAR(255) | S3 object key for URL refresh |
+
+Text-only messages have `image_url = NULL` and `image_key = NULL`. The `content` field is always present — for image-only messages it defaults to `"[image]"`.
+
+### Frontend Changes
+
+- **Camera button** (📷) next to the text input opens a file picker (JPEG/PNG/GIF/WebP, max 10MB)
+- **Image preview bar** shows a thumbnail + filename before sending, with a cancel button
+- **Send flow**: presigned URL → S3 upload → WS message with `imageUrl`/`imageKey`
+- **Message rendering**: images displayed inline (max 280×300px) with click-to-preview overlay, `data-image-key` attribute for refresh
+- **Full-screen preview**: clicking an image opens a dark overlay with the full-size image
+- **Expired URL auto-refresh**: `<img onerror="refreshExpiredImage(this)">` detects failed loads (expired presigned URLs), calls the download refresh endpoint, and updates `img.src` — with a `dataset.refreshed` flag to prevent infinite retry loops
+
+### S3 Presigned URLs — Deep Dive
+
+#### What is a presigned URL?
+
+A presigned URL is a regular S3 URL with **temporary credentials baked into the query string**. The image-service signs the URL using the AWS secret key + an expiration time. Anyone with the URL can perform the allowed operation (PUT or GET) until it expires — no AWS credentials needed on the client.
+
+```
+https://chatapp-images.s3.us-east-1.amazonaws.com/images/alice/550e8400.jpg
+  ?X-Amz-Algorithm=AWS4-HMAC-SHA256
+  &X-Amz-Credential=AKIAIOSFODNN7EXAMPLE/20260424/us-east-1/s3/aws4_request
+  &X-Amz-Date=20260424T090000Z
+  &X-Amz-Expires=604800              ← 7 days in seconds
+  &X-Amz-SignedHeaders=host
+  &X-Amz-Signature=fe5f80f7...       ← HMAC signature over all the above
+  &response-cache-control=public%2C%20max-age%3D604800%2C%20immutable
+```
+
+The signature covers the bucket, key, expiration, and all query parameters. Tampering with any parameter invalidates the signature → S3 returns `403 Forbidden`.
+
+#### Upload flow (presigned PUT)
+
+```
+Client                    Image Service                    AWS S3
+  |                            |                              |
+  | 1. POST /api/images/presign/upload                        |
+  |    {filename: "cat.jpg",   |                              |
+  |     contentType: "image/jpeg"}                            |
+  |--------------------------->|                              |
+  |                            |                              |
+  |                            | Validate content type        |
+  |                            | Generate S3 key:             |
+  |                            |   images/alice/{uuid}.jpg    |
+  |                            |                              |
+  |                            | S3Presigner.presignPutObject:|
+  |                            |   bucket: chatapp-images     |
+  |                            |   key: images/alice/{uuid}.jpg
+  |                            |   contentType: image/jpeg    |
+  |                            |   expiry: 15 minutes         |
+  |                            |   → signed PUT URL           |
+  |                            |                              |
+  |                            | S3Presigner.presignGetObject:|
+  |                            |   bucket: chatapp-images     |
+  |                            |   key: images/alice/{uuid}.jpg
+  |                            |   expiry: 7 days             |
+  |                            |   responseCacheControl:      |
+  |                            |     "public, max-age=604800, |
+  |                            |      immutable"              |
+  |                            |   → signed GET URL           |
+  |                            |                              |
+  |  {uploadUrl, downloadUrl,  |                              |
+  |   imageKey}                |                              |
+  |<---------------------------|                              |
+  |                                                           |
+  | 2. PUT uploadUrl                                          |
+  |    Content-Type: image/jpeg                               |
+  |    Body: <raw JPEG bytes>                                 |
+  |---------------------------------------------------------->|
+  |    200 OK                                                 |
+  |<----------------------------------------------------------|
+```
+
+The image bytes go **directly from the browser to S3**. The image-service only generates the URL — it never sees the image data. This means zero server bandwidth for uploads.
+
+#### Download flow (how images appear in chat)
+
+There are **two paths** an image can take to reach the browser:
+
+**Path A — First load (new message via WebSocket push)**
+
+```
+1. User sends image → WS message includes downloadUrl (presigned GET) + imageKey
+2. Both users receive the WS push containing the downloadUrl
+3. chat.js renders: <img src="https://...s3.amazonaws.com/images/alice/uuid.jpg?X-Amz-...&response-cache-control=public,max-age=604800,immutable" />
+4. Browser fetches the image from S3 using the presigned GET URL
+5. S3 checks: signature valid? not expired? → 200 OK + image bytes
+6. S3 response includes: Cache-Control: public, max-age=604800, immutable
+   (because the URL had &response-cache-control=... in the query string)
+7. Browser stores the image in disk cache, keyed by the full URL
+```
+
+**Path B — Page refresh (loading message history from DB)**
+
+```
+1. Browser refreshes → JS calls GET /api/messages/conversation/{id}?page=0
+2. Backend queries PostgreSQL → returns messages with imageUrl and imageKey columns
+3. chat.js renders: <img src="{imageUrl from DB}" data-image-key="{imageKey}" onerror="refreshExpiredImage(this)" />
+4. Browser checks disk cache for the exact URL:
+   a. CACHE HIT (same URL, within max-age):
+      → Image loaded from disk cache instantly. No network request to S3.
+   b. CACHE MISS (first visit, or different URL):
+      → Browser fetches from S3. S3 returns image + Cache-Control header.
+      → Browser caches for next time.
+   c. URL EXPIRED (>7 days old, signature rejected by S3):
+      → S3 returns 403 Forbidden → <img> fires onerror event
+      → refreshExpiredImage(this) calls GET /api/images/presign/download?imageKey=...
+      → Image-service generates a fresh presigned GET URL (with new signature + new expiry)
+      → img.src is updated → browser fetches from S3 with the new URL → image appears
+```
+
+#### Cache-Control header — how it works
+
+The `Cache-Control` header is **not set on the S3 object metadata**. It's a **response override** embedded in the presigned URL via the `response-cache-control` query parameter.
+
+When S3 serves a GET request for a presigned URL containing `&response-cache-control=public,%20max-age%3D604800,%20immutable`:
+
+1. S3 validates the signature (which covers the `response-cache-control` parameter)
+2. S3 returns the image bytes with this HTTP response header:
+   ```
+   Cache-Control: public, max-age=604800, immutable
+   ```
+3. The browser interprets this header:
+   - `public` — any cache (browser, CDN, proxy) may store this response
+   - `max-age=604800` — the response is fresh for 604,800 seconds (7 days)
+   - `immutable` — the content at this URL will never change (don't revalidate)
+
+**What the browser does on page refresh**:
+
+| Scenario | What happens | Network request? |
+|---|---|---|
+| Same presigned URL, within 7 days | Served from disk cache | **No** — instant |
+| Same presigned URL, after 7 days | Cache expired, refetch from S3 (but URL also expired → 403 → onerror refresh) | Yes |
+| Different presigned URL (e.g., after refresh endpoint call) | Cache miss for new URL, fetch from S3 | Yes (once) |
+| Hard refresh (Ctrl+Shift+R) | Browser ignores cache, fetches all resources | Yes |
+
+**Why `immutable`?** A presigned URL points to a specific S3 object with a fixed signature. The content behind that URL will never change — the same image bytes will always be returned until the signature expires. `immutable` tells the browser to skip conditional requests (`If-Modified-Since`, `If-None-Match`) and serve directly from cache. This avoids unnecessary 304 round-trips.
+
+**Why old images don't have Cache-Control**: The `response-cache-control` parameter is part of the presigned URL signature. Old images have their `imageUrl` stored in the database from before the code change — those URLs were signed without the parameter. S3 returns no `Cache-Control` header for them. When the old URL expires (after 7 days), the `onerror` handler fetches a fresh URL from the image-service, which now includes the parameter. From that point on, the image benefits from browser caching.
+
+#### Presigned URL lifecycle summary
+
+```
+Time 0                   Upload                    Download                Browser Cache
+──────────────────────────────────────────────────────────────────────────────────────────
+T=0    User sends image   PUT URL generated         GET URL generated       —
+                          (expires in 15 min)       (expires in 7 days)
+                                                    Stored in DB as
+                                                    message.imageUrl
+
+T=0+   Image uploaded     PUT URL used, then        GET URL used to         Image fetched from S3.
+       to S3 directly     discarded                 render <img src=...>    S3 returns Cache-Control.
+                                                                            Browser caches on disk.
+
+T=1h   —                  PUT URL still valid       GET URL still valid     Served from disk cache
+                          (unused)                                          (no S3 request)
+
+T=15m  —                  PUT URL EXPIRED           —                       —
+                          (no longer usable)
+
+T=7d   —                  —                         GET URL EXPIRED         Cache also expired.
+                                                    S3 returns 403.         onerror fires.
+                                                    onerror → refresh       Fresh GET URL fetched.
+                                                    endpoint → new URL.     New image cached again.
+                                                    DB still has old URL    (New URL in memory only,
+                                                    (not updated).          not persisted to DB)
+```
+
+### AWS Setup Required
+
+See the **AWS Setup Steps** section in README.md for the required S3 bucket configuration.
+
+---
+
+*Last updated: April 24, 2026 (V10 — image messaging via S3 presigned URLs, browser caching, expired URL auto-refresh). Tests run on Docker Desktop; production numbers will differ.*

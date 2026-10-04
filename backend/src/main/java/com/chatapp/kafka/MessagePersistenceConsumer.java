@@ -41,6 +41,8 @@ public class MessagePersistenceConsumer {
                     .sender(sender)
                     .receiver(receiver)
                     .content(event.content())
+                    .imageUrl(event.imageUrl())
+                    .imageKey(event.imageKey())
                     .build();
         }).toList();
 

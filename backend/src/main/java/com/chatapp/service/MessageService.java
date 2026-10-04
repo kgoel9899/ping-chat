@@ -54,7 +54,9 @@ public class MessageService {
                 request.content(),
                 now,
                 false,
-                request.clientId() // echoed back so client can dedup by stable UUID
+                request.clientId(), // echoed back so client can dedup by stable UUID
+                request.imageUrl(),
+                request.imageKey()
         );
 
         // Push to both users via WebSocket FIRST (instant delivery)
@@ -65,12 +67,14 @@ public class MessageService {
         ChatMessageEvent event = new ChatMessageEvent(
                 sender.getId(), sender.getUsername(),
                 receiver.getId(), receiver.getUsername(),
-                request.content()
+                request.content(),
+                request.imageUrl(),
+                request.imageKey()
         );
 
         if (kafkaDown.get()) {
             // Circuit OPEN — skip Kafka entirely, save to DB instantly
-            persistDirectly(sender, receiver, event.content());
+            persistDirectly(sender, receiver, event.content(), event.imageUrl(), event.imageKey());
         } else {
             // Circuit CLOSED — try Kafka
             try {
@@ -79,7 +83,7 @@ public class MessageService {
             } catch (Exception ex) {
                 kafkaDown.set(true);
                 log.warn("Kafka circuit OPEN — Kafka unreachable, all messages now go to direct DB: {}", ex.getMessage());
-                persistDirectly(sender, receiver, event.content());
+                persistDirectly(sender, receiver, event.content(), event.imageUrl(), event.imageKey());
             }
         }
 
@@ -102,7 +106,7 @@ public class MessageService {
         try {
             // Send a health-check record. If the broker is up, this succeeds within delivery.timeout.ms.
             kafkaTemplate.send("chat-messages", "__probe__",
-                    new ChatMessageEvent(0L, "__probe__", 0L, "__probe__", "__health_check__")).get();
+                    new ChatMessageEvent(0L, "__probe__", 0L, "__probe__", "__health_check__", null, null)).get();
             kafkaDown.set(false);
             log.info("Kafka circuit CLOSED — Kafka is back up, resuming normal async persistence");
         } catch (Exception ex) {
@@ -113,11 +117,13 @@ public class MessageService {
     /**
      * Fallback: persist message directly to the database when Kafka is unavailable.
      */
-    private void persistDirectly(User sender, User receiver, String content) {
+    private void persistDirectly(User sender, User receiver, String content, String imageUrl, String imageKey) {
         Message message = Message.builder()
                 .sender(sender)
                 .receiver(receiver)
                 .content(content)
+                .imageUrl(imageUrl)
+                .imageKey(imageKey)
                 .build();
         messageRepository.save(message);
         log.info("DIRECT DB SAVE (Kafka fallback): message saved to database, sender={} -> receiver={}", sender.getId(), receiver.getId());
@@ -148,7 +154,9 @@ public class MessageService {
                 message.getContent(),
                 message.getTimestamp(),
                 message.isRead(),
-                null // DB-loaded messages have no clientId
+                null, // DB-loaded messages have no clientId
+                message.getImageUrl(),
+                message.getImageKey()
         );
     }
 }

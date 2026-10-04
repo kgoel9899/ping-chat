@@ -71,6 +71,22 @@ const api = {
   searchUsers(q) {
     return this.request('GET', '/api/users/search?q=' + encodeURIComponent(q));
   },
+
+  // Images — presigned S3 URLs via image-service
+  getImageUploadUrl(filename, contentType) {
+    return this.request('POST', '/api/images/presign/upload', { filename: filename, contentType: contentType });
+  },
+  refreshImageDownloadUrl(imageKey) {
+    return this.request('GET', '/api/images/presign/download?imageKey=' + encodeURIComponent(imageKey));
+  },
+  async uploadImageToS3(uploadUrl, file) {
+    var res = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type },
+      body: file,
+    });
+    if (!res.ok) throw new Error('S3 upload failed: ' + res.status);
+  },
 };
 
 // ── WebSocket (STOMP) connection manager ──
@@ -105,15 +121,18 @@ var ws = {
     this.client.activate();
   },
 
-  sendMessage(receiverId, content) {
+  sendMessage(receiverId, content, imageUrl, imageKey) {
     if (!this.client || !this.client.connected) {
       console.error('[WS] Not connected');
       return null;
     }
     var clientId = crypto.randomUUID();
+    var payload = { receiverId: receiverId, content: content, clientId: clientId };
+    if (imageUrl) payload.imageUrl = imageUrl;
+    if (imageKey) payload.imageKey = imageKey;
     this.client.publish({
       destination: '/app/chat.send',
-      body: JSON.stringify({ receiverId: receiverId, content: content, clientId: clientId }),
+      body: JSON.stringify(payload),
     });
     return clientId;
   },
